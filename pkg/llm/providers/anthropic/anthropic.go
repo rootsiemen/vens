@@ -99,6 +99,12 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 	params.Temperature = param.NewOpt(req.Temperature)
 
 	msg, err := c.client.Messages.New(ctx, params)
+	if err != nil && temperatureDeprecated(err) {
+		// Current model generations refuse an explicit temperature outright.
+		// Retry once with the parameter omitted instead of failing the run.
+		params.Temperature = param.Opt[float64]{}
+		msg, err = c.client.Messages.New(ctx, params)
+	}
 	if err != nil {
 		if detail, ok := unsupportedStructuredOutput(err); ok {
 			return "", fmt.Errorf("anthropic: %q: %w, see docs/concepts/choosing-a-model.md (%s)",
@@ -116,6 +122,26 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 		}
 	}
 	return "", fmt.Errorf("anthropic: no text content block in response")
+}
+
+// temperatureDeprecated reports whether err is the API refusing an explicit
+// temperature parameter. Current model generations (e.g. claude-sonnet-5)
+// reject it with a 400 instead of ignoring it, so the caller retries the
+// request with the parameter omitted.
+func temperatureDeprecated(err error) bool {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(apiErr.RawJSON()), &body) != nil {
+		return false
+	}
+	return strings.Contains(body.Error.Message, "`temperature` is deprecated for this model.")
 }
 
 func unsupportedStructuredOutput(err error) (string, bool) {
