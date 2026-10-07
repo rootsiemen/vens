@@ -292,3 +292,53 @@ func TestGenerate_OtherBadRequestIsNotStructuredOutput(t *testing.T) {
 		t.Errorf("err = %v, want it classified as a plain provider error", err)
 	}
 }
+
+// A model generation that refuses an explicit temperature fails the first
+// call with a 400; Generate retries once with the parameter omitted and the
+// run succeeds.
+func TestGenerate_TemperatureDeprecatedRetriesWithoutIt(t *testing.T) {
+	const deprecatedBody = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\"," +
+		"\"message\":\"`temperature` is deprecated for this model.\"}}"
+
+	rec := &recordedReq{}
+	bodies := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.hits++
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.Header().Set("Content-Type", "application/json")
+		if rec.hits == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, deprecatedBody)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, successBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ANTHROPIC_BASE_URL", srv.URL)
+
+	c, err := New("claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	out, err := c.Generate(context.Background(), newReq())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if out != `{"cves":[]}` {
+		t.Fatalf("out = %q", out)
+	}
+	if rec.hits != 2 {
+		t.Fatalf("hits = %d, want 2 (one failed attempt, one retry)", rec.hits)
+	}
+	if !strings.Contains(bodies[0], `"temperature":0`) {
+		t.Errorf("first attempt should send temperature, got: %s", bodies[0])
+	}
+	if strings.Contains(bodies[1], "temperature") {
+		t.Errorf("retry must omit temperature, got: %s", bodies[1])
+	}
+}
