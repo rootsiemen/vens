@@ -203,6 +203,7 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 	}
 
 	group := make([]outputhandler.VulnRating, 0, len(vulnBatch))
+	var zeroScored []string
 	for _, answer := range answers {
 		entry, evidenceRef := answer.entry, answer.evidenceRef
 
@@ -213,6 +214,15 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		owaspScore := likelihoodScore * impactScore // Range: 0-81
 
 		score := clampScore(owaspScore)
+		if score == 0 {
+			// A zero score means the model declined to assess the vulnerability:
+			// an answer of zeros is indistinguishable from a genuine low score,
+			// and would be published as severity info, which gates ignore.
+			// Fail the run instead of publishing it.
+			// See https://github.com/venslabs/vens/issues/337.
+			zeroScored = append(zeroScored, entry.VulnID)
+			continue
+		}
 		severity := riskconfig.RiskSeverity(score)
 
 		// Generate OWASP RR vector in standard format
@@ -274,6 +284,13 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 				})
 			}
 		}
+	}
+
+	if len(zeroScored) > 0 {
+		return fmt.Errorf("model returned a zero score for %d of %d vulnerabilities: %s "+
+			"-- a zero score means the model declined to assess; failing the run "+
+			"rather than publishing severity info (see https://github.com/venslabs/vens/issues/337)",
+			len(zeroScored), len(answers), strings.Join(zeroScored, ", "))
 	}
 
 	if len(group) == 0 {
