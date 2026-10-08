@@ -325,3 +325,53 @@ func TestGenerator_Attestor_RetryClaimsCiteTheRetryBatch(t *testing.T) {
 	require.Equal(t, "evidence-batch-1", cited["CVE-2024-0002"], "answered on the first ask")
 	require.Equal(t, "evidence-batch-2", cited["CVE-2024-0001"], "answered on the second")
 }
+// zeroScoringLLM answers every vulnerability with the declined-assessment
+// shape from https://github.com/venslabs/vens/issues/337: zeros everywhere
+// except a token business impact, which still computes to a zero score.
+type zeroScoringLLM struct {
+	calls int
+}
+
+func (m *zeroScoringLLM) Generate(_ context.Context, req llm.Request) (string, error) {
+	var in []struct {
+		VulnID string `json:"vulnId"`
+	}
+	if err := json.Unmarshal([]byte(req.Human), &in); err != nil {
+		return "", err
+	}
+	m.calls++
+
+	out := llmOutput{Results: make([]llmOutputEntry, 0, len(in))}
+	for _, v := range in {
+		out.Results = append(out.Results, llmOutputEntry{
+			VulnID:             v.VulnID,
+			ThreatAgentScore:   0,
+			VulnerabilityScore: 0,
+			TechnicalImpact:    0,
+			BusinessImpact:     1,
+			Reasoning:          "mock declined assessment",
+		})
+	}
+	b, err := json.Marshal(out)
+	return string(b), err
+}
+
+// A zero score means the model declined to assess: publishing it as severity
+// info would let the gate pass, so the run must fail instead (#337).
+func TestGenerator_FailsOnZeroScore(t *testing.T) {
+	m := &zeroScoringLLM{}
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
+	require.NoError(t, err)
+
+	called := false
+	h := func(group []outputhandler.VulnRating) error {
+		called = true
+		return nil
+	}
+
+	err = g.GenerateRiskScore(context.Background(), testVulns(3), h)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "zero score")
+	require.False(t, called, "no ratings must be emitted when the run fails")
+	require.Equal(t, 1, m.calls, "the batch must not be retried")
+}
