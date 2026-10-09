@@ -148,6 +148,10 @@ func action(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Only forward --llm-temperature when the user actually passed it: the 0.0
+	// default is our choice, not the user's, and some models (Anthropic's
+	// current generation) reject an explicit temperature outright.
+	o.TemperatureSet = flags.Changed("llm-temperature")
 	o.BatchSize, err = flags.GetInt("llm-batch-size")
 	if err != nil {
 		return err

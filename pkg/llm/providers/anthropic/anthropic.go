@@ -79,6 +79,10 @@ func resolveBaseURL(env string) string {
 // Generate forces the response to conform to req.Schema using Anthropic's native
 // structured output and returns the model's raw JSON text. Anthropic has no seed
 // parameter, so req.Seed is ignored (vens still records it in its attestation).
+//
+// Temperature is only sent when the user explicitly passed --llm-temperature
+// (req.TemperatureSet): current model generations reject an explicit temperature
+// outright, and the flag's 0.0 default is our choice, not the user's.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) {
 	var schema map[string]any
 	if err := json.Unmarshal(req.Schema, &schema); err != nil {
@@ -96,16 +100,24 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 			Format: sdk.JSONOutputFormatParam{Schema: schema},
 		},
 	}
-	params.Temperature = param.NewOpt(req.Temperature)
+	if req.TemperatureSet {
+		if modelRefusesTemperature(c.model) {
+			// Fail before any call: retrying without the parameter would
+			// silently drop a value the user explicitly asked for, on every
+			// batch.
+			return "", fmt.Errorf("anthropic: %q refuses an explicit temperature: omit --llm-temperature for this model", c.model)
+		}
+		params.Temperature = param.NewOpt(req.Temperature)
+	}
 
 	msg, err := c.client.Messages.New(ctx, params)
-	if err != nil && temperatureDeprecated(err) {
-		// Current model generations refuse an explicit temperature outright.
-		// Retry once with the parameter omitted instead of failing the run.
-		params.Temperature = param.Opt[float64]{}
-		msg, err = c.client.Messages.New(ctx, params)
-	}
 	if err != nil {
+		if req.TemperatureSet && temperatureDeprecated(err) {
+			// Unknown model, or a stale refuse-list: the API refused the
+			// explicit temperature. Fail with a clear message instead of
+			// retrying without it.
+			return "", fmt.Errorf("anthropic: %q refused the explicit --llm-temperature: omit the flag for this model", c.model)
+		}
 		if detail, ok := unsupportedStructuredOutput(err); ok {
 			return "", fmt.Errorf("anthropic: %q: %w, see docs/concepts/choosing-a-model.md (%s)",
 				c.model, llm.ErrUnsupportedStructuredOutput, detail)
@@ -124,10 +136,34 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 	return "", fmt.Errorf("anthropic: no text content block in response")
 }
 
+// temperatureRefusingModels lists Anthropic model generations known to reject
+// an explicit temperature parameter outright ("`temperature` is deprecated for
+// this model."). Anthropic's capabilities object carries no temperature key,
+// and adjacent generations (sonnet-4-6 vs sonnet-5) report identical
+// capabilities while differing on temperature, so a best-effort list is the
+// only way to fail fast. A model missing from the list still fails with a
+// clear error after its first refused call instead of retrying.
+var temperatureRefusingModels = []string{
+	// Current generation; e.g. claude-sonnet-5. Extend as new generations
+	// confirm they refuse an explicit temperature.
+	"sonnet-5",
+}
+
+// modelRefusesTemperature reports whether model is a known temperature refuser.
+func modelRefusesTemperature(model string) bool {
+	m := strings.ToLower(model)
+	for _, known := range temperatureRefusingModels {
+		if strings.Contains(m, known) {
+			return true
+		}
+	}
+	return false
+}
+
 // temperatureDeprecated reports whether err is the API refusing an explicit
 // temperature parameter. Current model generations (e.g. claude-sonnet-5)
-// reject it with a 400 instead of ignoring it, so the caller retries the
-// request with the parameter omitted.
+// reject it with a 400 instead of ignoring it; the caller fails with a clear
+// error rather than retrying with the parameter omitted.
 func temperatureDeprecated(err error) bool {
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {

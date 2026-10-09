@@ -27,9 +27,14 @@ type Request struct {
 	// enforces it natively (OpenAI response_format, Anthropic output_config,
 	// Gemini responseJsonSchema, Ollama format).
 	Schema json.RawMessage
-	// Temperature, including 0, is forwarded to keep scoring deterministic,
-	// except where the provider rejects an explicit value (OpenAI reasoning models).
+	// Temperature is the sampling temperature forwarded to the provider.
+	// Providers that must distinguish an explicit user value from the flag
+	// default (Anthropic: current model generations reject an explicit
+	// temperature outright) only send it when TemperatureSet is true.
 	Temperature float64
+	// TemperatureSet reports whether the user explicitly passed --llm-temperature
+	// (cmd/vens checks flags.Changed).
+	TemperatureSet bool
 	// Seed is applied only when non-zero. Providers without a seed parameter
 	// (e.g. Anthropic) ignore it.
 	Seed int
