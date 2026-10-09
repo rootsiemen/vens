@@ -139,24 +139,33 @@ func New(o Opts) (*Generator, error) {
 // SetAttestor attaches an attestation Builder after construction. Pass nil to disable.
 func (g *Generator) SetAttestor(b *attestation.Builder) { g.attestor = b }
 
+// scoringRun carries state shared across the batches of one GenerateRiskScore
+// call: the total number of vulnerabilities scanned (for error denominators)
+// and the VulnIDs an earlier batch already scored (so one batch's declined
+// answer never kills a run another batch already scored).
+type scoringRun struct {
+	total  int
+	scored map[string]bool
+}
+
 // GenerateRiskScore generates contextual OWASP risk scores for the given vulnerabilities.
 // It uses the LLM to calculate the OWASP risk score for each vulnerability based on
 // the project context hints provided in config.yaml.
 func (g *Generator) GenerateRiskScore(ctx context.Context, vulns []Vulnerability, h func([]outputhandler.VulnRating) error) error {
-	return g.scoreInBatches(ctx, vulns, g.o.BatchSize, h)
+	return g.scoreInBatches(ctx, vulns, g.o.BatchSize, &scoringRun{total: len(vulns), scored: make(map[string]bool)}, h)
 }
 
 // scoreInBatches scores vulns batchSize at a time. If a provider truncates a
 // batch at its output-token limit (llm.ErrTruncated), that batch is split in
 // half and retried; the split repeats on each further truncation, down to a
 // single CVE. Only a lone CVE that still truncates fails the run.
-func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, batchSize int, h func([]outputhandler.VulnRating) error) error {
+func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, batchSize int, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
 	if batchSize < 1 {
 		batchSize = 1
 	}
 	for i := 0; i < len(vulns); i += batchSize {
 		batch := vulns[i:min(i+batchSize, len(vulns))]
-		err := g.generateRiskScore(ctx, batch, h)
+		err := g.generateRiskScore(ctx, batch, run, h)
 		if err == nil {
 			continue
 		}
@@ -164,7 +173,7 @@ func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, b
 			half := (len(batch) + 1) / 2
 			slog.WarnContext(ctx, "LLM truncated the batch; retrying with smaller batches",
 				"from", len(batch), "to", half)
-			if err := g.scoreInBatches(ctx, batch, half, h); err != nil {
+			if err := g.scoreInBatches(ctx, batch, half, run, h); err != nil {
 				return err
 			}
 			continue
@@ -174,7 +183,7 @@ func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, b
 	return nil
 }
 
-func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerability, h func([]outputhandler.VulnRating) error) error {
+func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerability, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
 	if g.o.Config == nil {
 		return errors.New("config not initialized; load config.yaml first")
 	}
@@ -197,13 +206,15 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		}
 	}
 
-	answers, err := g.scoreAll(ctx, llmBatch)
+	answers, err := g.scoreAll(ctx, llmBatch, run)
 	if err != nil {
 		return err
 	}
+	for _, a := range answers {
+		run.scored[a.entry.VulnID] = true
+	}
 
 	group := make([]outputhandler.VulnRating, 0, len(vulnBatch))
-	var zeroScored []string
 	for _, answer := range answers {
 		entry, evidenceRef := answer.entry, answer.evidenceRef
 
@@ -214,15 +225,6 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		owaspScore := likelihoodScore * impactScore // Range: 0-81
 
 		score := clampScore(owaspScore)
-		if score == 0 {
-			// A zero score means the model declined to assess the vulnerability:
-			// an answer of zeros is indistinguishable from a genuine low score,
-			// and would be published as severity info, which gates ignore.
-			// Fail the run instead of publishing it.
-			// See https://github.com/venslabs/vens/issues/337.
-			zeroScored = append(zeroScored, entry.VulnID)
-			continue
-		}
 		severity := riskconfig.RiskSeverity(score)
 
 		// Generate OWASP RR vector in standard format
@@ -286,13 +288,6 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		}
 	}
 
-	if len(zeroScored) > 0 {
-		return fmt.Errorf("model returned a zero score for %d of %d vulnerabilities: %s "+
-			"-- a zero score means the model declined to assess; failing the run "+
-			"rather than publishing severity info (see https://github.com/venslabs/vens/issues/337)",
-			len(zeroScored), len(answers), strings.Join(zeroScored, ", "))
-	}
-
 	if len(group) == 0 {
 		return nil
 	}
@@ -309,18 +304,41 @@ type answer struct {
 	evidenceRef string
 }
 
+// declinedAssessment reports whether the model's answer is a declined
+// assessment rather than a genuine low score: every factor but a possible token
+// business impact is zeroed (the #337 shape), so the OWASP score computes to 0
+// while carrying no signal. A zero reached through a non-zero axis — e.g.
+// CVE-2019-9192's [0 1 0 0], zero via the impact axis — is a genuine low score,
+// not a declined one.
+func declinedAssessment(e llmOutputEntry) bool {
+	return e.ThreatAgentScore == 0 && e.VulnerabilityScore == 0 && e.TechnicalImpact == 0
+}
+
 // scoreAll scores every vulnerability in the batch. A model can leave some out of
-// its answer without saying so; those are asked for again on their own, and still
-// missing after that fails the run — a VEX short of a CVE cannot gate a build.
-func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability) ([]answer, error) {
+// its answer without saying so, or answer with a declined assessment (zeros);
+// those are asked for again on their own, and still missing or declined after
+// that fails the run — a VEX short of a CVE cannot gate a build. CVEs an
+// earlier batch already scored are never re-asked and never fail the run.
+func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, run *scoringRun) ([]answer, error) {
 	answers := make([]answer, 0, len(batch))
 	scored := make(map[string]bool, len(batch))
+	for id := range run.scored {
+		scored[id] = true
+	}
+	declined := make(map[string]bool)
 
 	collect := func(entries []llmOutputEntry, evidenceRef string) {
 		for _, e := range entries {
 			if e.VulnID == "" || scored[e.VulnID] {
 				continue
 			}
+			if declinedAssessment(e) {
+				// A declined assessment is the same as no answer: leave the
+				// CVE unscored so it is asked for again below.
+				declined[e.VulnID] = true
+				continue
+			}
+			delete(declined, e.VulnID)
 			scored[e.VulnID] = true
 			answers = append(answers, answer{entry: e, evidenceRef: evidenceRef})
 		}
@@ -349,11 +367,24 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability) ([]a
 	}
 	collect(entries, evidenceRef)
 
-	if still := unscored(batch, scored); len(still) > 0 {
-		return nil, fmt.Errorf("model returned no score for %d of %d vulnerabilities, after asking again: %s",
-			len(still), asked, strings.Join(vulnIDs(still), ", "))
+	still := unscored(batch, scored)
+	if len(still) == 0 {
+		return answers, nil
 	}
-	return answers, nil
+	var declinedIDs, missingIDs []string
+	for _, v := range still {
+		if declined[v.VulnID] {
+			declinedIDs = append(declinedIDs, v.VulnID)
+		} else {
+			missingIDs = append(missingIDs, v.VulnID)
+		}
+	}
+	if len(declinedIDs) > 0 {
+		return nil, fmt.Errorf("model declined to assess %d of %d vulnerabilities, after asking again: %s (see https://github.com/venslabs/vens/issues/337)",
+			len(declinedIDs), run.total, strings.Join(declinedIDs, ", "))
+	}
+	return nil, fmt.Errorf("model returned no score for %d of %d vulnerabilities, after asking again: %s",
+		len(missingIDs), asked, strings.Join(missingIDs, ", "))
 }
 
 func vulnIDs(vs []LLMVulnerability) []string {
