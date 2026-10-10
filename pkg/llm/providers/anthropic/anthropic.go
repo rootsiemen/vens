@@ -79,10 +79,6 @@ func resolveBaseURL(env string) string {
 // Generate forces the response to conform to req.Schema using Anthropic's native
 // structured output and returns the model's raw JSON text. Anthropic has no seed
 // parameter, so req.Seed is ignored (vens still records it in its attestation).
-//
-// Temperature is only sent when the user explicitly passed --llm-temperature
-// (req.TemperatureSet): current model generations reject an explicit temperature
-// outright, and the flag's 0.0 default is our choice, not the user's.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) {
 	var schema map[string]any
 	if err := json.Unmarshal(req.Schema, &schema); err != nil {
@@ -100,19 +96,16 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 			Format: sdk.JSONOutputFormatParam{Schema: schema},
 		},
 	}
-	if req.TemperatureSet {
-		if modelRefusesTemperature(c.model) {
-			// Fail before any call: retrying without the parameter would
-			// silently drop a value the user explicitly asked for, on every
-			// batch.
-			return "", fmt.Errorf("anthropic: %q refuses an explicit temperature: omit --llm-temperature for this model", c.model)
-		}
-		params.Temperature = param.NewOpt(req.Temperature)
+	if req.Temperature != nil && modelRefusesTemperature(c.model) {
+		return "", fmt.Errorf("anthropic: %q refuses an explicit temperature: omit --llm-temperature for this model", c.model)
+	}
+	if req.Temperature != nil {
+		params.Temperature = param.NewOpt(*req.Temperature)
 	}
 
 	msg, err := c.client.Messages.New(ctx, params)
 	if err != nil {
-		if req.TemperatureSet && temperatureDeprecated(err) {
+		if req.Temperature != nil && temperatureDeprecated(err) {
 			// Unknown model, or a stale refuse-list: the API refused the
 			// explicit temperature. Fail with a clear message instead of
 			// retrying without it.
@@ -147,9 +140,17 @@ var temperatureRefusingModels = []string{
 	// Current generation; e.g. claude-sonnet-5. Extend as new generations
 	// confirm they refuse an explicit temperature.
 	"sonnet-5",
+	"opus-4-7",
+	"opus-4-8",
+	"opus-5",
+	"opus-5-5",
+	"fable",
 }
 
 // modelRefusesTemperature reports whether model is a known temperature refuser.
+//
+// TODO: move this into a shared helper package so every provider can reuse the
+// same model-refusal list (follow-up ticket).
 func modelRefusesTemperature(model string) bool {
 	m := strings.ToLower(model)
 	for _, known := range temperatureRefusingModels {

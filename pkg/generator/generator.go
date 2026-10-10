@@ -90,12 +90,12 @@ type llmOutput struct {
 
 // Opts configures the Generator.
 type Opts struct {
-	LLM         llm.Client
-	Temperature float64
-	// TemperatureSet reports whether the user explicitly passed --llm-temperature.
-	TemperatureSet bool
-	BatchSize      int // Avoid high values to avoid rate limit
-	Seed           int
+	LLM llm.Client
+	// Temperature is the sampling temperature forwarded to the provider, nil
+	// when the user did not pass --llm-temperature.
+	Temperature *float64
+	BatchSize   int // Avoid high values to avoid rate limit
+	Seed        int
 
 	SleepOnRateLimit time.Duration
 	RetryOnRateLimit int
@@ -397,12 +397,11 @@ func (g *Generator) evaluateOWASPScores(ctx context.Context, vulns []LLMVulnerab
 	}
 
 	req := llm.Request{
-		System:         systemPrompt,
-		Human:          humanPrompt,
-		Schema:         schema,
-		Temperature:    g.o.Temperature,
-		TemperatureSet: g.o.TemperatureSet,
-		Seed:           g.o.Seed,
+		System:      systemPrompt,
+		Human:       humanPrompt,
+		Schema:      schema,
+		Temperature: g.o.Temperature,
+		Seed:        g.o.Seed,
 	}
 
 	var raw string

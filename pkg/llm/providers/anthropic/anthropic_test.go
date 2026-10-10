@@ -73,14 +73,15 @@ const successBody = `{"id":"msg_1","type":"message","role":"assistant","model":"
 
 func newReq() llm.Request {
 	return llm.Request{
-		System:         "you are vens",
-		Human:          "score these cves",
-		Schema:         json.RawMessage(`{"type":"object","properties":{"cves":{"type":"array"}}}`),
-		Temperature:    0,
-		TemperatureSet: true, // explicit --llm-temperature 0
-		Seed:           42,   // Anthropic has no seed param; must be ignored
+		System:      "you are vens",
+		Human:       "score these cves",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"cves":{"type":"array"}}}`),
+		Temperature: ptr(0), // explicit --llm-temperature 0
+		Seed:        42,     // Anthropic has no seed param; must be ignored
 	}
 }
+
+func ptr(f float64) *float64 { return &f }
 
 // The outgoing request carries the schema in output_config.format, a hardcoded
 // max_tokens, an explicit temperature=0, the system block, and no seed.
@@ -300,7 +301,7 @@ func TestGenerate_TemperatureNotSentByDefault(t *testing.T) {
 	c, rec := newTestClient(t, "claude-sonnet-4-5", 200, successBody)
 
 	req := newReq()
-	req.TemperatureSet = false
+	req.Temperature = nil // --llm-temperature not passed
 	out, err := c.Generate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
