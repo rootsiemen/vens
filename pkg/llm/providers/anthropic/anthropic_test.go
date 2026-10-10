@@ -78,7 +78,7 @@ func newReq() llm.Request {
 		Schema:         json.RawMessage(`{"type":"object","properties":{"cves":{"type":"array"}}}`),
 		Temperature:    0,
 		TemperatureSet: true, // explicit --llm-temperature 0
-		Seed:           42,    // Anthropic has no seed param; must be ignored
+		Seed:           42,   // Anthropic has no seed param; must be ignored
 	}
 }
 
