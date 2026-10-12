@@ -116,12 +116,13 @@ Note: `--input-format` examples in this page omit `--sbom-serial-number` for bre
 
 ## What happens if the LLM fails on one batch?
 
-Vens processes CVEs in batches (default 10, tunable via `--llm-batch-size`). The failure behaviour is batch-level, not CVE-level:
+Vens processes CVEs in batches (default 10, tunable via `--llm-batch-size`). Provider errors fail the whole run; a CVE the model leaves out or gives zero likelihood is handled CVE by CVE:
 
 - **Rate limit on a batch** → Vens retries that batch up to 10 times with a 10 s backoff (`pkg/llm`). If all retries fail, the whole `vens generate` run exits with a non-zero status and the output VEX file is not written. This is intentional — a partial VEX would be misleading.
 - **LLM returns malformed JSON that cannot be parsed** → Vens exits with `unable to parse LLM output: ...`. The failing batch is included in the error message; use `--debug-dir` to capture the exact prompt so you can reproduce or downgrade the batch size.
 - **Network error / provider outage mid-batch** → same behaviour: exit non-zero, no partial VEX.
-- **A single CVE that the LLM cannot score** → the LLM still returns a JSON entry with some component scores; Vens clamps them to `[0, 9]` and proceeds. There is no "skipped" state in the output today. If you see a CVE with four identical component scores that match the default severity bucket of its CVSS, treat it as low-confidence and audit it via `--debug-dir`.
+- **The LLM leaves a CVE out of its answer** → Vens asks for it again on its own. If it is still missing and no later batch scores it through another package, the run fails at the end, names the CVE and writes no VEX.
+- **The LLM gives a CVE zero likelihood** (usually "not reachable here") → Vens publishes it as-is, so it lands as `info`, and logs the model's reasoning at WARN. That passes a `fail-on-severity` gate set to `low` or above: read those lines before trusting it.
 
 For CI pipelines, this means you should either:
 
