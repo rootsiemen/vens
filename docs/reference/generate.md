@@ -86,7 +86,7 @@ vens generate --llm-batch-size 15 ...
 
 ### `--llm-temperature <float>`
 
-LLM sampling temperature. Default: `0.0` — keeps sampling as close to greedy as each provider supports. Values > 0 introduce randomness and are not recommended for production scoring.
+LLM sampling temperature. Only sent to the provider when the flag is explicitly passed — by default no temperature is sent at all (the `0.0` default is never forwarded on its own). Values > 0 introduce randomness and are not recommended for production scoring. Note: some models (e.g. current Anthropic generations) reject an explicit temperature outright, so passing the flag with such a model fails fast with a clear error instead of silently dropping it.
 
 ### `--llm-seed <int>`
 
@@ -201,7 +201,7 @@ vens generate --attest \
     - `generation_method` — `llm`
     - `provider` / `model` — backend and model used (e.g. `openai` / `gpt-5.4-mini`); when the provider's `*_MODEL` env var is unset, vens falls back to that provider's default and logs it
     - `seed` — the LLM seed (`0` if unset)
-    - `temperature` — the sampling temperature
+    - `temperature` — the sampling temperature (only present when `--llm-temperature` was explicitly passed)
     - `prompt_hash` — SHA-256 of `system_prompt + "\n\n" + human_prompt`
     - `input_hash` — SHA-256 of the scanner report bytes
     - `config_hash` — SHA-256 of the `config.yaml` used

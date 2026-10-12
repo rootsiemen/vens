@@ -61,7 +61,7 @@ The LLM calculates the OWASP risk score (0-81) for each vulnerability using:
 
 	flags := cmd.Flags()
 	flags.String("llm", llm.Auto, fmt.Sprintf("LLM backend (%v)", llm.Names))
-	flags.Float64("llm-temperature", 0.0, "Temperature, forwarded to every provider (0.0 = deterministic)")
+	flags.Float64("llm-temperature", 0.0, "Temperature, only sent to the provider when explicitly passed (default: not sent; some models reject an explicit temperature)")
 	flags.Int("llm-batch-size", generator.DefaultBatchSize, "LLM batch size")
 	flags.Int("llm-seed", 0, "Seed (0 means no explicit seed)")
 	flags.String("config-file", "", "Path to config.yaml file with OWASP factors")
@@ -144,9 +144,16 @@ func action(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	o.Temperature, err = flags.GetFloat64("llm-temperature")
-	if err != nil {
-		return err
+	// Temperature is only forwarded when the user actually passed
+	// --llm-temperature: the 0.0 default is our choice, not the user's, and
+	// some models (Anthropic's current generation) reject an explicit
+	// temperature outright.
+	if flags.Changed("llm-temperature") {
+		t, err := flags.GetFloat64("llm-temperature")
+		if err != nil {
+			return err
+		}
+		o.Temperature = &t
 	}
 	o.BatchSize, err = flags.GetInt("llm-batch-size")
 	if err != nil {

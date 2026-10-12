@@ -1,6 +1,6 @@
 # --attest emits a CDXA sibling file with per-batch LLM evidence
 
-exec vens generate --llm=mock --attest --llm-seed=7 --config-file=config.yaml --sbom-serial-number=urn:uuid:11111111-2222-3333-4444-555555555555 report.json output.cdx.json
+exec vens generate --llm=mock --attest --llm-seed=7 --llm-temperature=0.7 --config-file=config.yaml --sbom-serial-number=urn:uuid:11111111-2222-3333-4444-555555555555 report.json output.cdx.json
 stderr 'Processing vulnerabilities'
 stderr 'Attestation written'
 
@@ -33,9 +33,11 @@ json-contains output.attestation.cdx.json '"name": "config_hash"'
 json-contains output.attestation.cdx.json '"name": "raw_response"'
 json-contains output.attestation.cdx.json '"encoding": "base64"'
 
-# Evidence values: provider and model are separate fields, seed echoed
+# Evidence values: provider and model are separate fields, seed echoed,
+# explicit --llm-temperature recorded with its exact value
 json-contains output.attestation.cdx.json '"content": "mock"'
 json-contains output.attestation.cdx.json '"content": "7"'
+json-contains output.attestation.cdx.json '"content": "0.7"'
 
 # One claim per CVE/component, with a deduped target, assessor and attestation
 json-contains output.attestation.cdx.json '"claims"'
@@ -45,6 +47,13 @@ json-contains output.attestation.cdx.json '"name": "openssl"'
 json-contains output.attestation.cdx.json '"assessors"'
 json-contains output.attestation.cdx.json '"name": "vens automated assessment"'
 json-contains output.attestation.cdx.json '"attestations"'
+
+# Second run without --llm-temperature: nothing is sent, so the attestation
+# omits the temperature field entirely instead of recording 0.0
+exec vens generate --llm=mock --attest --llm-seed=7 --config-file=config.yaml --sbom-serial-number=urn:uuid:11111111-2222-3333-4444-555555555555 report.json output2.cdx.json
+stderr 'Attestation written'
+exists output2.attestation.cdx.json
+! json-contains output2.attestation.cdx.json '"name": "temperature"'
 
 -- config.yaml --
 project:

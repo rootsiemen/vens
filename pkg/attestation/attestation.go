@@ -35,7 +35,10 @@ type Opts struct {
 	Provider    string
 	Model       string
 	Seed        int
-	Temperature float64
+	// Temperature is the sampling temperature the run used, nil when the
+	// user did not pass --llm-temperature (nothing was sent). A nil value
+	// omits the temperature field from the attestation.
+	Temperature *float64
 	InputHash   string
 	ConfigHash  string
 	VEXUUID     string
@@ -213,10 +216,14 @@ func (b *Builder) evidence() *[]cyclonedx.DeclarationEvidence {
 			textData("provider", b.opts.Provider),
 			textData("model", b.opts.Model),
 			textData("seed", fmt.Sprintf("%d", b.opts.Seed)),
-			textData("temperature", fmt.Sprintf("%g", b.opts.Temperature)),
+		}
+		if b.opts.Temperature != nil {
+			data = append(data, textData("temperature", fmt.Sprintf("%g", *b.opts.Temperature)))
+		}
+		data = append(data,
 			textData("prompt_hash", e.promptHash),
 			textData("input_hash", b.opts.InputHash),
-		}
+		)
 		if b.opts.ConfigHash != "" {
 			data = append(data, textData("config_hash", b.opts.ConfigHash))
 		}
