@@ -94,13 +94,12 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 			},
 		},
 	}
-	// Reasoning models (o-series, gpt-5*) reject an explicit temperature and only
-	// accept their default; every other model gets it, including 0 for
-	// deterministic scoring.
-	if !isReasoningModel(c.model) {
-		// TODO(follow-up): forward req.Temperature only when non-nil instead of
-		// sending 0 when --llm-temperature wasn't passed.
-		params.Temperature = openai.Float(llm.TemperatureOrZero(req))
+	// Reasoning models (o-series, gpt-5*) reject an explicit temperature and
+	// only accept their default; every other model gets it, but only when the
+	// user passed --llm-temperature — without the flag nothing is sent and the
+	// model uses its own default.
+	if !isReasoningModel(c.model) && req.Temperature != nil {
+		params.Temperature = openai.Float(*req.Temperature)
 	}
 	if req.Seed != 0 {
 		params.Seed = openai.Int(int64(req.Seed))

@@ -154,8 +154,8 @@ func TestGenerate_SeedOmittedWhenZero(t *testing.T) {
 	if _, ok := gen["seed"]; ok {
 		t.Fatal("seed must be omitted when req.Seed == 0")
 	}
-	if _, ok := gen["temperature"]; !ok {
-		t.Fatal("temperature must be present even at 0")
+	if _, ok := gen["temperature"]; ok {
+		t.Fatal("temperature must be omitted when --llm-temperature wasn't passed")
 	}
 }
 

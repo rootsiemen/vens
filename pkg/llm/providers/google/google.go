@@ -77,9 +77,11 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 		// SystemInstruction is a dedicated system turn; its role is ignored.
 		cfg.SystemInstruction = genai.NewContentFromText(req.System, "")
 	}
-	// TODO(follow-up): forward req.Temperature only when non-nil instead of
-	// sending 0 when --llm-temperature wasn't passed.
-	cfg.Temperature = genai.Ptr(float32(llm.TemperatureOrZero(req)))
+	// Only forward temperature when the user passed --llm-temperature;
+	// without the flag nothing is sent and Gemini uses its own default.
+	if req.Temperature != nil {
+		cfg.Temperature = genai.Ptr(float32(*req.Temperature))
+	}
 	if req.Seed != 0 {
 		cfg.Seed = genai.Ptr(int32(req.Seed))
 	}

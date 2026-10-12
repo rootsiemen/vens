@@ -126,6 +126,9 @@ func TestGenerate_SeedOmittedWhenZero(t *testing.T) {
 	if _, ok := got.Options["seed"]; ok {
 		t.Errorf("seed present but Seed==0: %v", got.Options["seed"])
 	}
+	if _, ok := got.Options["temperature"]; ok {
+		t.Errorf("temperature present but --llm-temperature wasn't passed: %v", got.Options["temperature"])
+	}
 }
 
 func TestGenerate_Branches(t *testing.T) {
