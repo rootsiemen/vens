@@ -86,7 +86,7 @@ vens generate --llm-batch-size 15 ...
 
 ### `--llm-temperature <float>`
 
-LLM sampling temperature. Only sent to the provider when the flag is explicitly passed — by default no temperature is sent at all (the `0.0` default is never forwarded on its own). Values > 0 introduce randomness and are not recommended for production scoring. Note: some models (e.g. current Anthropic generations) reject an explicit temperature outright, so passing the flag with such a model fails fast with a clear error instead of silently dropping it.
+LLM sampling temperature. The opt-in behavior — "only sent when the flag is explicitly passed" — currently applies to Anthropic (and to OpenAI reasoning models, which reject an explicit temperature entirely): other OpenAI models, Google, and Ollama still receive `0` when the flag isn't passed, until the follow-up ticket threads the opt-in through every provider. Without the flag, Anthropic uses its own default (`1.0`) — pass `--llm-temperature 0` explicitly to keep the old behaviour. Values > 0 introduce randomness and are not recommended for production scoring. Note: some models (e.g. current Anthropic generations) reject an explicit temperature outright, so passing the flag with such a model fails fast with a clear error instead of silently dropping it.
 
 ### `--llm-seed <int>`
 

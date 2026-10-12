@@ -35,9 +35,11 @@ type Opts struct {
 	Provider    string
 	Model       string
 	Seed        int
-	// Temperature is the sampling temperature the run used, nil when the
-	// user did not pass --llm-temperature (nothing was sent). A nil value
-	// omits the temperature field from the attestation.
+	// Temperature is the sampling temperature the run used, nil when
+	// --llm-temperature wasn't passed (it records the flag, not what each
+	// provider actually sent — openai, google and ollama still send 0 when
+	// it's nil). A nil value omits the temperature field from the
+	// attestation.
 	Temperature *float64
 	InputHash   string
 	ConfigHash  string
