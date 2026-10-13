@@ -173,15 +173,14 @@ func (g *Generator) GenerateRiskScore(ctx context.Context, vulns []Vulnerability
 }
 
 // checkUnassessed fails the run once, at the end, when the model left CVEs
-// unanswered after asking again. Both sides of the count are distinct CVEs —
+// unanswered after asking again. Both sides of the count are distinct CVEs,
 // never package rows.
 func (run *scoringRun) checkUnassessed() error {
 	if len(run.missing) == 0 {
 		return nil
 	}
-	total := len(run.scored) + len(run.missing)
-	return fmt.Errorf("model failed to assess %d of %d vulnerabilities, after asking again: returned no score for %d: %s",
-		len(run.missing), total, len(run.missing), strings.Join(sortedKeys(run.missing), ", "))
+	return fmt.Errorf("model returned no score for %d of %d vulnerabilities, after asking again: %s",
+		len(run.missing), len(run.scored)+len(run.missing), strings.Join(sortedKeys(run.missing), ", "))
 }
 
 func sortedKeys(m map[string]bool) []string {
@@ -278,24 +277,18 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		if pend, ok := run.pending[entry.VulnID]; ok {
 			// This CVE finally got a score: fill in the rows earlier batches
 			// held back when they couldn't score it, instead of dropping them
-			// from the VEX.
-			merged := make([]Vulnerability, 0, len(comps)+len(pend))
-			merged = append(merged, comps...)
+			// from the VEX. Theirs come first, to keep scanner order.
+			merged := make([]Vulnerability, 0, len(pend)+len(comps))
 			merged = append(merged, pend...)
+			merged = append(merged, comps...)
 			comps = merged
 			delete(run.pending, entry.VulnID)
 		}
-		if len(comps) == 0 {
-			// Answers only cover CVEs from this batch, so this doesn't happen
-			// today; it guards against a CVE silently losing its rating.
-			comps = []Vulnerability{{VulnID: entry.VulnID}}
-		}
 
-		if answer.declined && !answer.reused {
-			// A "not reachable here" assessment is a real verdict, not a
-			// refusal: publish the score as-is and surface the model's
-			// reasoning at WARN. Log it once, when this batch first publishes
-			// the verdict — not again when later batches reuse the answer.
+		if answer.zeroLikelihood && !answer.published {
+			// A "not reachable here" verdict is published as-is, so it lands
+			// as info whatever impact the model gave: surface the model's
+			// reasoning at WARN. Only the batch that first publishes it logs it.
 			slog.WarnContext(ctx, "Assessment verdict: not reachable here; publishing its score as-is",
 				"vuln", entry.VulnID,
 				"score", fmt.Sprintf("%.1f", score),
@@ -305,7 +298,7 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		}
 
 		for _, v := range comps {
-			if !answer.declined {
+			if !answer.zeroLikelihood {
 				slog.InfoContext(ctx, "Scored vulnerability",
 					"vuln", entry.VulnID,
 					"pkg", v.BOMRef,
@@ -379,51 +372,37 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 }
 
 // answer pairs a model entry with the evidence bundle it came from. One bundle
-// per LLM call, so every entry from the same call shares it. declined marks a
-// "not reachable here"-shaped answer (see declinedAssessment): it is still a
-// real verdict and is published as-is, with its reasoning logged at WARN.
-// reused marks an answer pulled from an earlier batch's score instead of
-// obtained in this call: logging about it already happened when it was first
-// published, so batches that reuse it stay quiet.
+// per LLM call, so every entry from the same call shares it. zeroLikelihood
+// marks a "not reachable here" verdict (see func zeroLikelihood), published
+// as-is with its reasoning logged at WARN. published marks an answer an
+// earlier batch already published: that batch logged its WARN line, so it is
+// not repeated.
 type answer struct {
-	entry       llmOutputEntry
-	evidenceRef string
-	declined    bool
-	reused      bool
+	entry          llmOutputEntry
+	evidenceRef    string
+	zeroLikelihood bool
+	published      bool
 }
 
-// tokenScore is the largest value the model writes on an impact axis next to a
-// zero likelihood: [0 0 1 1] with "not reachable here" means the same as
-// [0 0 0 1].
-const tokenScore = 1
-
-// declinedAssessment reports whether the answer has zero likelihood (both
-// likelihood factors at 0) with at most token impact values, so its score is
-// exactly 0. In practice these are real "not reachable here" verdicts, not
-// refusals: they are published as-is with the reasoning logged at WARN instead
-// of failing the run. A zero reached with a non-zero likelihood, e.g.
+// zeroLikelihood reports whether both likelihood factors are 0, which makes
+// the score 0 whatever impact the model gave. In practice these are real "not
+// reachable here" verdicts, not refusals: they are published as-is with the
+// reasoning logged at WARN. A zero reached with a non-zero likelihood, e.g.
 // CVE-2019-9192's [0 1 0 0], is a genuine low score and is logged like any other.
-func declinedAssessment(e llmOutputEntry) bool {
-	return e.ThreatAgentScore == 0 && e.VulnerabilityScore == 0 &&
-		e.TechnicalImpact <= tokenScore && e.BusinessImpact <= tokenScore
+func zeroLikelihood(e llmOutputEntry) bool {
+	return e.ThreatAgentScore == 0 && e.VulnerabilityScore == 0
 }
 
 // scoreAll scores every vulnerability in the batch. A model can leave some out of
 // its answer without saying so; those are asked for again on their own. CVEs
 // left unanswered after the retry don't fail the batch: they're recorded on
 // the run (missing) and checked once, at the end of the run, so batch order
-// never decides the outcome. CVEs an earlier batch already scored are never
-// re-asked: they are left out of the prompt — and when nothing is left to ask
-// about, no LLM call is made at all — and their first score is reused, so
-// every component keeps its rows in the VEX. A declined assessment (see
-// declinedAssessment) is a real verdict, not a refusal: it is published as-is
-// with the reasoning logged at WARN, never re-asked and never failed.
+// never decides the outcome. CVEs an earlier batch already scored are left
+// out of the prompt (no LLM call at all when nothing is left to ask about) and
+// their first score is reused, so every component keeps its rows in the VEX.
 func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, run *scoringRun) ([]answer, error) {
 	answers := make([]answer, 0, len(batch))
 	scored := make(map[string]bool, len(batch))
-	for id := range run.scored {
-		scored[id] = true
-	}
 
 	// Leave out every CVE an earlier batch already scored: asking the model
 	// about it again would only have its answer dropped.
@@ -460,10 +439,8 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, run 
 			}
 			scored[e.VulnID] = true
 			delete(run.missing, e.VulnID)
-			a := answer{entry: e, evidenceRef: evidenceRef, declined: declinedAssessment(e)}
-			if _, ok := run.scores[e.VulnID]; !ok {
-				run.scores[e.VulnID] = a
-			}
+			a := answer{entry: e, evidenceRef: evidenceRef, zeroLikelihood: zeroLikelihood(e)}
+			run.scores[e.VulnID] = a
 			answers = append(answers, a)
 		}
 	}
@@ -482,9 +459,9 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, run 
 			}
 			if first, ok := run.scores[v.VulnID]; ok {
 				// Pulled from an earlier batch's score, not obtained in this
-				// call. It was already logged only if that batch published
-				// it: a batch split after a truncated retry never did.
-				first.reused = run.scored[v.VulnID]
+				// call. That batch did not always publish it: one split after
+				// a truncated retry never did.
+				first.published = run.scored[v.VulnID]
 				answers = append(answers, first)
 				seen[v.VulnID] = true
 			}

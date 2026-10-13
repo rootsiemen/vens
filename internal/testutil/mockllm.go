@@ -23,6 +23,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/venslabs/vens/pkg/llm"
 )
@@ -30,6 +31,11 @@ import (
 // FailEnv, when set to a non-empty value, makes Generate fail. Integration
 // tests use it to exercise error paths that only surface during generation.
 const FailEnv = "VENS_MOCK_LLM_FAIL"
+
+// SkipEnv holds comma-separated CVE ids that Generate always leaves out of its
+// answer, even when asked again, so integration tests can reach the failure
+// for a CVE the model never scores.
+const SkipEnv = "VENS_MOCK_LLM_SKIP"
 
 type MockLLM struct{}
 
@@ -51,7 +57,8 @@ type llmOutput struct {
 }
 
 // Generate returns deterministic scores for every vulnId found in the human
-// prompt, so integration tests stay reproducible without a real provider.
+// prompt except those named in SkipEnv, so integration tests stay reproducible
+// without a real provider.
 func (m *MockLLM) Generate(ctx context.Context, req llm.Request) (string, error) {
 	if os.Getenv(FailEnv) != "" {
 		return "", errors.New("mockllm: forced failure (" + FailEnv + " is set)")
@@ -62,8 +69,16 @@ func (m *MockLLM) Generate(ctx context.Context, req llm.Request) (string, error)
 		return "", err
 	}
 
+	skip := map[string]bool{}
+	for _, id := range strings.Split(os.Getenv(SkipEnv), ",") {
+		skip[strings.TrimSpace(id)] = true
+	}
+
 	results := make([]llmOutputEntry, 0, len(vulnIDs))
 	for _, vulnID := range vulnIDs {
+		if skip[vulnID] {
+			continue
+		}
 		scores := deterministicScores(vulnID)
 		results = append(results, llmOutputEntry{
 			VulnID:             vulnID,
@@ -115,8 +130,8 @@ func deterministicScores(vulnID string) [4]float64 {
 		}
 	}
 
-	// Keep base in [3,8]: a negative hash remainder would otherwise clamp every
-	// factor to 0, which reads as a declined assessment (see vens#337), not a score.
+	// Keep base in [3,8]: a negative hash remainder could otherwise clamp every
+	// factor to 0, a zero likelihood the mock never means to give (see vens#337).
 	base := float64(((hash%6)+6)%6 + 3)
 	return [4]float64{
 		clamp(base),

@@ -1,0 +1,50 @@
+# A CVE the model never scores, even when asked again, fails the run at the
+# end: the CVE is named, and neither the VEX nor the attestation is written.
+
+env VENS_MOCK_LLM_SKIP=CVE-2024-5678
+! exec vens generate --llm=mock --attest --config-file=config.yaml --sbom-serial-number=urn:uuid:22222222-2222-2222-2222-222222222222 report.json out.cdx.json
+stderr 'model returned no score for 1 of 2 vulnerabilities, after asking again: CVE-2024-5678'
+! exists out.cdx.json
+! exists out.attestation.cdx.json
+! exec sh -c 'ls .vens-*.tmp'
+
+-- config.yaml --
+project:
+  name: "unscored-cve-test"
+  description: "A CVE the model never scores"
+context:
+  exposure: "internet"
+  data_sensitivity: "high"
+  business_criticality: "critical"
+-- report.json --
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-06-11T10:00:00Z",
+  "ArtifactName": "demo",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Target": "demo (debian 12)",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-1234",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.0.11",
+          "Severity": "HIGH",
+          "Title": "Scored CVE",
+          "PkgIdentifier": { "PURL": "pkg:deb/debian/openssl@3.0.11" }
+        },
+        {
+          "VulnerabilityID": "CVE-2024-5678",
+          "PkgName": "curl",
+          "InstalledVersion": "7.88.1",
+          "Severity": "HIGH",
+          "Title": "CVE the model never scores",
+          "PkgIdentifier": { "PURL": "pkg:deb/debian/curl@7.88.1" }
+        }
+      ]
+    }
+  ]
+}
