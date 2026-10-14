@@ -1,9 +1,10 @@
-# A CVE the model never scores, even when asked again, fails the run at the
-# end: the CVE is named, and neither the VEX nor the attestation is written.
+# A CVE the model never scores, even when asked again, fails the run early:
+# with no later batch covering it, waiting would only pay for more batches.
+# The CVE is named, and neither the VEX nor the attestation is written.
 
 env VENS_MOCK_LLM_SKIP=CVE-2024-5678
 ! exec vens generate --llm=mock --attest --config-file=config.yaml --sbom-serial-number=urn:uuid:22222222-2222-2222-2222-222222222222 report.json out.cdx.json
-stderr 'model returned no score for 1 of 2 vulnerabilities, after asking again: CVE-2024-5678'
+stderr 'model returned no score for CVE-2024-5678 after asking again, and no later batch covers it'
 ! exists out.cdx.json
 ! exists out.attestation.cdx.json
 ! exec sh -c 'ls .vens-*.tmp'
