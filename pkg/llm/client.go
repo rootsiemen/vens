@@ -29,10 +29,9 @@ type Request struct {
 	Schema json.RawMessage
 	// Temperature is the sampling temperature forwarded to the provider, nil
 	// when the user did not pass --llm-temperature (cmd/vens checks
-	// flags.Changed). Every provider only sends it when non-nil: Anthropic's
-	// current model generations reject an explicit temperature outright, and
-	// the other providers leave their own default in place when nothing is
-	// sent.
+	// flags.Changed). Nil means the flag wasn't passed: nothing is sent and
+	// the provider uses its own default; every provider only forwards it
+	// when non-nil.
 	Temperature *float64
 	// Seed is applied only when non-zero. Providers without a seed parameter
 	// (e.g. Anthropic) ignore it.

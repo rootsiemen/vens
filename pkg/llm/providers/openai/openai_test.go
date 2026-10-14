@@ -198,6 +198,22 @@ func TestGenerate_OmitsTemperatureAndSeed(t *testing.T) {
 	})
 }
 
+// An explicitly passed temperature is forwarded as-is, including non-zero
+// values (0 is already covered by TestGenerate_RequestShape).
+func TestGenerate_ForwardsExplicitTemperature(t *testing.T) {
+	url, captured := fakeServer(t, http.StatusOK, successBody)
+	c := newTestClient(t, "gpt-4o", url)
+	if _, err := c.Generate(context.Background(), llm.Request{
+		Schema:      json.RawMessage(testSchema),
+		Temperature: fptr(0.7),
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if temp, ok := (*captured)["temperature"]; !ok || temp.(float64) != 0.7 {
+		t.Errorf("temperature = %v (present=%v), want 0.7", (*captured)["temperature"], ok)
+	}
+}
+
 func TestGenerate_Branches(t *testing.T) {
 	cases := []struct {
 		name          string
