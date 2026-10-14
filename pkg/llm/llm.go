@@ -117,3 +117,34 @@ func ResolveModel(name string) (provider, model string, defaulted bool) {
 	}
 	return
 }
+
+// temperatureRefusingModels lists Anthropic model generations known to reject
+// an explicit temperature parameter outright ("`temperature` is deprecated for
+// this model."). Anthropic's capabilities object carries no temperature key,
+// and adjacent generations (sonnet-4-6 vs sonnet-5) report identical
+// capabilities while differing on temperature, so a best-effort list is the
+// only way to fail fast. A model missing from the list still fails with a
+// clear error after its first refused call instead of retrying.
+var temperatureRefusingModels = []string{
+	// Current generation; e.g. claude-sonnet-5. Extend as new generations
+	// confirm they refuse an explicit temperature.
+	"sonnet-5",
+	"opus-4-7",
+	"opus-4-8",
+	"opus-5",
+	"opus-5-5",
+	"fable",
+}
+
+// ModelRefusesTemperature reports whether model is a known temperature
+// refuser. The list holds Anthropic model ids, reusable by any provider that
+// serves Anthropic models; only the anthropic provider calls it today.
+func ModelRefusesTemperature(model string) bool {
+	m := strings.ToLower(model)
+	for _, known := range temperatureRefusingModels {
+		if strings.Contains(m, known) {
+			return true
+		}
+	}
+	return false
+}
