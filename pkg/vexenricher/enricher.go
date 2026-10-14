@@ -31,8 +31,8 @@ type VEXEnricher struct {
 	// Map of VulnerabilityID to OWASP Risk Rating vector string
 	OWASPVectorPerVulnID map[string]string
 	// Map of VulnerabilityID to OWASP severity band (critical/high/medium/low/info).
-	// The band survives scoring-scale changes, so downstream gates should
-	// prefer it over the raw score.
+	// The band is what downstream gates should read; the raw score is on a
+	// vens-internal scale.
 	OWASPSeverityPerVulnID map[string]string
 }
 
@@ -130,9 +130,8 @@ func (e *VEXEnricher) applyRating(vuln *trivytypes.DetectedVulnerability, score 
 	} else {
 		delete(customMap, "owasp_vector")
 	}
-	// The severity band is the stable contract for downstream gates: the raw
-	// score lives on a vens-internal scale that may move, while the band
-	// keeps its meaning.
+	// The severity band is the field vens commits to for downstream gates:
+	// the raw score lives on a vens-internal scale.
 	if severity != "" {
 		customMap["owasp_severity"] = severity
 	} else {
