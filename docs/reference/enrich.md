@@ -13,6 +13,9 @@ vens enrich --vex VEX_FILE [--output PATH] REPORT_FILE
 
 `vens enrich` takes a Trivy JSON report and annotates every vulnerability the VEX document scored, adding `Custom.owasp_score`, `Custom.owasp_severity`, and `Custom.owasp_vector`. Matching is on the vulnerability ID alone, and only ratings whose method is OWASP are read. Trivy's own `Severity` and CVSS fields stay as they are, and nothing else in the report changes.
 
+!!! note "From the next release"
+    `owasp_severity` isn't written by any release yet (v0.5.0 doesn't emit it) — it lands with the next one. The docs deploy from main, so it shows here first.
+
 ```json
 {
   "VulnerabilityID": "CVE-XXXX-YYYY",
@@ -25,7 +28,7 @@ vens enrich --vex VEX_FILE [--output PATH] REPORT_FILE
 }
 ```
 
-`Severity` still holds Trivy's value. If you gate or sort downstream, read `Custom.owasp_severity` — the band derived from the OWASP rating, which keeps its meaning across scoring changes. `Custom.owasp_score` carries the raw number on vens's internal 0–81 scale; gate on the band, not the number. If a CVE appears more than once in the VEX, the last OWASP rating wins.
+`Severity` still holds Trivy's value. Gate on `Custom.owasp_severity`, and sort by band rank then `Custom.owasp_score` — sorting on the band sorts strings alphabetically, so order the bands yourself and break ties by the score, which lives on vens's internal 0–81 scale. If a CVE appears more than once in the VEX, the last OWASP rating wins.
 
 Use it when your downstream tooling reads Trivy JSON directly and does not know how to parse a separate CycloneDX VEX.
 

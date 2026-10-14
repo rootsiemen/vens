@@ -147,6 +147,9 @@ jq '.Results[]?.Vulnerabilities[]? | {VulnerabilityID, Severity, owasp_severity:
 
 `Severity` and the CVSS block stay exactly as Trivy wrote them, so read `Custom.owasp_severity` in whatever consumes the JSON next. Reach for the raw `Custom.owasp_score` only when you need the number itself — it lives on vens's internal 0–81 scale and its mapping may change.
 
+!!! note "From the next release"
+    `owasp_severity` isn't written by any release yet (v0.5.0 doesn't emit it) — it lands with the next one. The docs deploy from main, so it shows here first.
+
 **Dependency-Track 5.1+.** It picks up the OWASP rating from the VEX and shows it on each finding. See [Send the scores to Dependency-Track](dependency-track.md).
 
 !!! note
@@ -180,14 +183,12 @@ For a turnkey Action, see [GitHub Actions integration](github-actions.md). The m
 
 - name: Fail on high contextual risk
   run: |
-    # Gate on the rating's severity band, not the raw score: the score lives
-    # on vens's internal 0-81 scale and its mapping may change, while the
-    # band keeps its meaning across releases (same contract as
-    # vens-action's fail-on-severity).
-    HIGH_COUNT=$(jq '[.vulnerabilities[] | select(.ratings[0].severity | IN("high", "critical"))] | length' vex.json)
+    # Gate on the band, it's the field vens commits to for gates and the one
+    # vens-action's fail-on-severity reads; re-check the threshold when #310 ships.
+    HIGH_COUNT=$(jq '[.vulnerabilities[] | select(any(.ratings[]?; .method == "OWASP" and (.severity | IN("high", "critical"))))] | length' vex.json)
     if [ "$HIGH_COUNT" -gt 0 ]; then
       echo "::error::$HIGH_COUNT CVEs above contextual threshold"
-      jq '[.vulnerabilities[] | select(.ratings[0].severity | IN("high", "critical")) | {id, score: .ratings[0].score, severity: .ratings[0].severity}]' vex.json
+      jq '[.vulnerabilities[] | select(any(.ratings[]?; .method == "OWASP" and (.severity | IN("high", "critical")))) | {id, score: .ratings[0].score, severity: .ratings[0].severity}]' vex.json
       exit 1
     fi
 

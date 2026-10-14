@@ -250,3 +250,61 @@ func TestEnrichReport_SeverityMapping(t *testing.T) {
 	customMap2 := vuln2.Custom.(map[string]interface{})
 	assert.NotContains(t, customMap2, "owasp_severity")
 }
+
+func TestEnrichReport_SeverityDeleteBranch(t *testing.T) {
+	// A rating without a severity band whose key is already in Custom must
+	// clear the stale entry: the delete branch in applyRating.
+	score := 12.0
+	vex := cdx.BOM{
+		SpecVersion: cdx.SpecVersion1_5,
+		Vulnerabilities: &[]cdx.Vulnerability{
+			{
+				ID: "CVE-2023-1234",
+				Ratings: &[]cdx.VulnerabilityRating{
+					{
+						Method: cdx.ScoringMethodOWASP,
+						Score:  &score,
+						// No severity carried.
+					},
+				},
+			},
+		},
+	}
+	vexData, _ := json.Marshal(vex)
+
+	// The report carries a stale band from an earlier enrichment.
+	report := trivytypes.Report{
+		Results: trivytypes.Results{
+			{
+				Target: "test-target",
+				Vulnerabilities: []trivytypes.DetectedVulnerability{
+					{
+						VulnerabilityID: "CVE-2023-1234",
+						PkgName:         "lib-a",
+						Custom: map[string]interface{}{
+							"owasp_score":    99.0,
+							"owasp_severity": "critical",
+						},
+					},
+				},
+			},
+		},
+	}
+	reportData, _ := json.Marshal(report)
+
+	enricher, err := New(vexData)
+	require.NoError(t, err)
+
+	enrichedReport, err := enricher.EnrichReport(context.Background(), reportData)
+	require.NoError(t, err)
+
+	require.Len(t, enrichedReport.Results, 1)
+	require.Len(t, enrichedReport.Results[0].Vulnerabilities, 1)
+
+	vuln := enrichedReport.Results[0].Vulnerabilities[0]
+	require.NotNil(t, vuln.Custom)
+	customMap := vuln.Custom.(map[string]interface{})
+	// The stale band is deleted, and the fresh score is still written.
+	assert.NotContains(t, customMap, "owasp_severity")
+	assert.Equal(t, score, customMap["owasp_score"])
+}
