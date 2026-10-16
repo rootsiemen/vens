@@ -124,7 +124,7 @@ Example output:
 ]
 ```
 
-**These are the CVEs you patch first.** Everything below a threshold (e.g. score < 20) can be deferred or suppressed.
+**These are the CVEs you patch first.** Everything in the low and info bands can be deferred or suppressed.
 
 !!! tip "Where is the reasoning?"
     Vens prints the LLM's per-CVE reasoning to stderr as it runs, and dumps every prompt and response to disk if you pass `--debug-dir ./debug`. The reasoning is intentionally not embedded in the VEX file — VEX stays a pure CycloneDX document. Use `--debug-dir` for audits.
@@ -184,11 +184,11 @@ For a turnkey Action, see [GitHub Actions integration](github-actions.md). The m
 - name: Fail on high contextual risk
   run: |
     # Gate on the band, it's the field vens commits to for gates and the one
-    # vens-action's fail-on-severity reads; re-check the threshold when #310 ships.
+    # vens-action's fail-on-severity reads; re-check the threshold when venslabs/vens#310 ships.
     HIGH_COUNT=$(jq '[.vulnerabilities[] | select(any(.ratings[]?; .method == "OWASP" and (.severity | IN("high", "critical"))))] | length' vex.json)
     if [ "$HIGH_COUNT" -gt 0 ]; then
       echo "::error::$HIGH_COUNT CVEs above contextual threshold"
-      jq '[.vulnerabilities[] | select(any(.ratings[]?; .method == "OWASP" and (.severity | IN("high", "critical")))) | {id, score: .ratings[0].score, severity: .ratings[0].severity}]' vex.json
+      jq '[.vulnerabilities[] | {id} + (.ratings[]? | select(.method == "OWASP" and (.severity | IN("high", "critical"))) | {score, severity})]' vex.json
       exit 1
     fi
 
