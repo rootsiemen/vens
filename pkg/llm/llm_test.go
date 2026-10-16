@@ -88,6 +88,7 @@ func TestModelRefusesTemperature(t *testing.T) {
 	}{
 		{name: "sonnet-5", model: "claude-sonnet-5", want: true},
 		{name: "opus-4-7", model: "claude-opus-4-7", want: true},
+		{name: "opus-5", model: "claude-opus-5", want: true},
 		{name: "aws opus-4-8", model: "us.anthropic.claude-opus-4-8-v1:0", want: true},
 		{name: "opus-5-5", model: "claude-opus-5-5", want: true},
 		{name: "fable-5-1", model: "claude-fable-5-1", want: true},
