@@ -257,7 +257,7 @@ func TestGenerator_FailsWhenASkippedVulnerabilityNeverComesBack(t *testing.T) {
 	err = g.GenerateRiskScore(context.Background(), testVulns(4), h)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "CVE-2024-0002")
-	require.Contains(t, err.Error(), "model returned no score for CVE-2024-0002 after asking again, and no later batch covers it")
+	require.Contains(t, err.Error(), "model returned no score for 1 of 4 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0002")
 	require.Len(t, emitted, 0, "the batch aborts before its group is emitted; the failed run commits no VEX")
 	require.Len(t, m.batches, 2, "asked once, asked again, then gives up")
 }
@@ -272,7 +272,7 @@ func TestGenerator_FailsFastWithoutScoringLaterBatches(t *testing.T) {
 
 	err = g.GenerateRiskScore(context.Background(), testVulns(4), nil)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "model returned no score for CVE-2024-0000 after asking again, and no later batch covers it")
+	require.Contains(t, err.Error(), "model returned no score for 1 of 2 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0000")
 	require.Equal(t, []int{2, 1}, m.batches, "the second batch must never be asked about")
 }
 
@@ -761,21 +761,27 @@ func TestZeroLikelihood(t *testing.T) {
 	}
 }
 
-// When the model leaves CVEs unanswered after asking again, the run fails once
-// at the end, naming the distinct CVEs — never package rows.
-// The end-of-run check counts distinct CVEs, not rows: two unanswered CVEs,
-// one of them on two components (two rows), report as 2 of 3. A run now fails
-// fast before this check when no later batch covers a missing CVE, so the
-// aggregate message is exercised directly on the run state.
+// When the model leaves CVEs unanswered after asking again, the run fails as
+// soon as no later batch can score them, naming the distinct CVEs — never
+// package rows. The end-of-run check counts distinct CVEs, not rows: two
+// unanswered CVEs, one of them on two components (two rows), report as 2 of 3.
 func TestGenerator_ErrorListsMissingWithCVECounts(t *testing.T) {
-	run := &scoringRun{
-		scored:  map[string]bool{"CVE-2024-0001": true},
-		missing: map[string]bool{"CVE-2024-0000": true, "CVE-2024-0002": true},
+	m := newDroppingLLM(true, "CVE-2024-0000", "CVE-2024-0002")
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
+	require.NoError(t, err)
+
+	// Two unanswered CVEs, one of them on two components (two rows), one
+	// scored CVE: 4 rows, 3 distinct CVEs.
+	vulns := []Vulnerability{
+		{VulnID: "CVE-2024-0000", PkgName: "pkg-a", Title: "t"},
+		{VulnID: "CVE-2024-0000", PkgName: "pkg-b", Title: "t"},
+		{VulnID: "CVE-2024-0001", PkgName: "pkg-c", Title: "t"},
+		{VulnID: "CVE-2024-0002", PkgName: "pkg-d", Title: "t"},
 	}
 
-	err := run.checkUnassessed()
+	err = g.GenerateRiskScore(context.Background(), vulns, nil)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "model returned no score for 2 of 3 vulnerabilities, after asking again: CVE-2024-0000, CVE-2024-0002",
+	require.Contains(t, err.Error(), "model returned no score for 2 of 3 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0000, CVE-2024-0002",
 		"2 of 3 distinct CVEs, not 4 rows")
 }
 
