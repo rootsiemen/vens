@@ -251,6 +251,124 @@ func TestEnrichReport_SeverityMapping(t *testing.T) {
 	assert.NotContains(t, customMap2, "owasp_severity")
 }
 
+func TestEnrichReport_SeverityProvenance(t *testing.T) {
+	// The band must be the OWASP rating's own band, never recomputed from
+	// the score, read from another method's rating, or kept from an
+	// earlier rating when the last OWASP rating carries none.
+	score45 := 45.0
+	scoreLow := 12.0
+	score10 := 10.0
+	score98 := 9.8
+	vex := cdx.BOM{
+		SpecVersion: cdx.SpecVersion1_5,
+		Vulnerabilities: &[]cdx.Vulnerability{
+			{
+				// #310 can produce score 45 with a critical band; a
+				// recompute from the score would give high instead.
+				ID: "CVE-2023-4444",
+				Ratings: &[]cdx.VulnerabilityRating{
+					{
+						Method:   cdx.ScoringMethodOWASP,
+						Score:    &score45,
+						Severity: cdx.SeverityCritical,
+					},
+				},
+			},
+			{
+				// A CVSSv31 critical rating next to an OWASP low: the
+				// band must come from the OWASP rating, not any rating.
+				ID: "CVE-2023-5555",
+				Ratings: &[]cdx.VulnerabilityRating{
+					{
+						Method:   cdx.ScoringMethodOWASP,
+						Score:    &scoreLow,
+						Severity: cdx.SeverityLow,
+					},
+					{
+						Method:   cdx.ScoringMethodCVSSv31,
+						Score:    &score98,
+						Severity: cdx.SeverityCritical,
+					},
+				},
+			},
+			{
+				// Two OWASP ratings where the last has no band: the last
+				// rating wins wholesale, so no band is written.
+				ID: "CVE-2023-6666",
+				Ratings: &[]cdx.VulnerabilityRating{
+					{
+						Method:   cdx.ScoringMethodOWASP,
+						Score:    &score45,
+						Severity: cdx.SeverityHigh,
+					},
+					{
+						Method: cdx.ScoringMethodOWASP,
+						Score:  &score10,
+						// No severity carried.
+					},
+				},
+			},
+		},
+	}
+	vexData, _ := json.Marshal(vex)
+
+	// Create a mock Trivy report
+	report := trivytypes.Report{
+		Results: trivytypes.Results{
+			{
+				Target: "test-target",
+				Vulnerabilities: []trivytypes.DetectedVulnerability{
+					{
+						VulnerabilityID: "CVE-2023-4444",
+						PkgName:         "lib-a",
+					},
+					{
+						VulnerabilityID: "CVE-2023-5555",
+						PkgName:         "lib-b",
+					},
+					{
+						VulnerabilityID: "CVE-2023-6666",
+						PkgName:         "lib-c",
+					},
+				},
+			},
+		},
+	}
+	reportData, _ := json.Marshal(report)
+
+	enricher, err := New(vexData)
+	require.NoError(t, err)
+
+	enrichedReport, err := enricher.EnrichReport(context.Background(), reportData)
+	require.NoError(t, err)
+
+	require.Len(t, enrichedReport.Results, 1)
+	require.Len(t, enrichedReport.Results[0].Vulnerabilities, 3)
+
+	// Copied band survives even when it disagrees with the score's band.
+	vuln1 := enrichedReport.Results[0].Vulnerabilities[0]
+	assert.Equal(t, "CVE-2023-4444", vuln1.VulnerabilityID)
+	require.NotNil(t, vuln1.Custom)
+	customMap1 := vuln1.Custom.(map[string]interface{})
+	assert.Equal(t, "critical", customMap1["owasp_severity"])
+	assert.Equal(t, score45, customMap1["owasp_score"])
+
+	// The band comes from the OWASP rating, not the CVSS one.
+	vuln2 := enrichedReport.Results[0].Vulnerabilities[1]
+	assert.Equal(t, "CVE-2023-5555", vuln2.VulnerabilityID)
+	require.NotNil(t, vuln2.Custom)
+	customMap2 := vuln2.Custom.(map[string]interface{})
+	assert.Equal(t, "low", customMap2["owasp_severity"])
+
+	// Last OWASP rating has no band: score updates, the key stays absent.
+	vuln3 := enrichedReport.Results[0].Vulnerabilities[2]
+	assert.Equal(t, "CVE-2023-6666", vuln3.VulnerabilityID)
+	require.NotNil(t, vuln3.Custom)
+	customMap3 := vuln3.Custom.(map[string]interface{})
+	assert.Equal(t, score10, customMap3["owasp_score"])
+	assert.NotContains(t, customMap3, "owasp_severity")
+}
+
 func TestEnrichReport_SeverityDeleteBranch(t *testing.T) {
 	// A rating without a severity band whose key is already in Custom must
 	// clear the stale entry: the delete branch in applyRating.
