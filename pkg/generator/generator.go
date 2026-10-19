@@ -142,22 +142,13 @@ func New(o Opts) (*Generator, error) {
 // SetAttestor attaches an attestation Builder after construction. Pass nil to disable.
 func (g *Generator) SetAttestor(b *attestation.Builder) { g.attestor = b }
 
-// scoringRun carries state shared across the batches of one GenerateRiskScore
-// call: the CVEs already scored, the first answer per CVE (a later batch
-// leaves that CVE out of its prompt and reuses the answer, so its other
-// components keep their rows), the components of CVEs no batch
-// could score yet (held back as pending, and filled in once a later batch
-// scores the CVE), and the CVEs left unanswered after asking again that later
-// batches may still score. A CVE with no rows in later batches fails the run
-// as soon as it stays unanswered, instead of paying for the rest; the
-// end-of-run checkUnassessed is only a safety net for that bookkeeping — it
-// can no longer fire through the normal path, but it keeps an off-by-one in
-// the later-batch tracking from silently dropping a CVE out of the VEX.
+// scoringRun is the state shared by the batches of one GenerateRiskScore call.
 type scoringRun struct {
-	scored  map[string]bool
-	scores  map[string]answer
-	missing map[string]bool
-	pending map[string][]Vulnerability
+	scored  map[string]bool            // CVEs a finished batch emitted
+	scores  map[string]answer          // first answer per CVE, reused by later batches
+	missing map[string]bool            // unanswered CVEs a later row can still score
+	pending map[string][]Vulnerability // rows held back until their CVE is scored
+	lastRow map[string]int             // index of each CVE's last row in the run
 }
 
 // GenerateRiskScore generates contextual OWASP risk scores for the given vulnerabilities.
@@ -169,20 +160,19 @@ func (g *Generator) GenerateRiskScore(ctx context.Context, vulns []Vulnerability
 		scores:  make(map[string]answer),
 		missing: make(map[string]bool),
 		pending: make(map[string][]Vulnerability),
+		lastRow: make(map[string]int, len(vulns)),
 	}
-	if err := g.scoreInBatches(ctx, vulns, g.o.BatchSize, nil, run, h); err != nil {
+	for i, v := range vulns {
+		run.lastRow[v.VulnID] = i
+	}
+	if err := g.scoreInBatches(ctx, vulns, 0, g.o.BatchSize, run, h); err != nil {
 		return err
 	}
 	return run.checkUnassessed()
 }
 
-// checkUnassessed is the end-of-run safety net: it fails the run once when the
-// model left CVEs unanswered after asking again. Through the normal path it
-// can no longer fire — a CVE with no later rows fails fast in scoreAll, and a
-// CVE with later rows is either scored (which deletes it from missing) or
-// fails fast in its last batch — but it guards against a bookkeeping slip in
-// the later-batch tracking silently dropping a CVE out of the VEX.
-// Both sides of the count are distinct CVEs, never package rows.
+// checkUnassessed is a safety net: scoreAll already stops the run when an
+// unanswered CVE has no later row. Counts are distinct CVEs, not rows.
 func (run *scoringRun) checkUnassessed() error {
 	if len(run.missing) == 0 {
 		return nil
@@ -200,27 +190,17 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-// scoreInBatches scores vulns batchSize at a time. If a provider truncates a
-// batch at its output-token limit (llm.ErrTruncated), that batch is split in
-// half and retried; the split repeats on each further truncation, down to a
-// single CVE. Only a lone CVE that still truncates fails the run.
-//
-// later holds the rows that come after this slice's batches in the run, so a
-// batch can fail fast when a CVE it could not score has no rows left to ask
-// about instead of paying for every remaining batch first.
-func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, batchSize int, later []Vulnerability, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
+// scoreInBatches scores vulns batchSize at a time; offset is the run index of
+// vulns[0]. A batch the provider truncates (llm.ErrTruncated) is split in half
+// and retried, down to a single CVE; only a lone CVE that still truncates fails
+// the run.
+func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, offset, batchSize int, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
 	if batchSize < 1 {
 		batchSize = 1
 	}
 	for i := 0; i < len(vulns); i += batchSize {
 		batch := vulns[i:min(i+batchSize, len(vulns))]
-		// The rows after this batch within this slice, plus everything after
-		// the slice itself. Built fresh so the recursion can't clobber the
-		// caller's backing array through append.
-		batchLater := make([]Vulnerability, 0, len(vulns)-(i+len(batch))+len(later))
-		batchLater = append(batchLater, vulns[i+len(batch):]...)
-		batchLater = append(batchLater, later...)
-		err := g.generateRiskScore(ctx, batch, batchLater, run, h)
+		err := g.generateRiskScore(ctx, batch, offset+i+len(batch), run, h)
 		if err == nil {
 			continue
 		}
@@ -228,12 +208,7 @@ func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, b
 			half := (len(batch) + 1) / 2
 			slog.WarnContext(ctx, "LLM truncated the batch; retrying with smaller batches",
 				"from", len(batch), "to", half)
-			// Thread batchLater, not later: later is the rows after the slice
-			// being batched, and here that slice is batch itself. A split
-			// sub-batch must see the rest of its own top-level batch, or a
-			// CVE skipped in a sub-batch fails fast even when a later row
-			// would score it.
-			if err := g.scoreInBatches(ctx, batch, half, batchLater, run, h); err != nil {
+			if err := g.scoreInBatches(ctx, batch, offset+i, half, run, h); err != nil {
 				return err
 			}
 			continue
@@ -243,7 +218,8 @@ func (g *Generator) scoreInBatches(ctx context.Context, vulns []Vulnerability, b
 	return nil
 }
 
-func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerability, later []Vulnerability, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
+// generateRiskScore scores one batch; end is the run index just past it.
+func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerability, end int, run *scoringRun, h func([]outputhandler.VulnRating) error) error {
 	if g.o.Config == nil {
 		return errors.New("config not initialized; load config.yaml first")
 	}
@@ -266,7 +242,7 @@ func (g *Generator) generateRiskScore(ctx context.Context, vulnBatch []Vulnerabi
 		}
 	}
 
-	answers, err := g.scoreAll(ctx, llmBatch, later, run)
+	answers, err := g.scoreAll(ctx, llmBatch, end, run)
 	if err != nil {
 		return err
 	}
@@ -418,15 +394,11 @@ func zeroLikelihood(e llmOutputEntry) bool {
 
 // scoreAll scores every vulnerability in the batch. A model can leave some out of
 // its answer without saying so; those are asked for again on their own. A CVE
-// still unanswered after the retry fails the batch right away when no later
-// batch holds another row of it: waiting would only burn LLM calls on batches
-// that can never score it. When later batches do hold it, the CVE is recorded
-// on the run (missing); the end-of-run checkUnassessed stays as a safety net
-// so a bookkeeping slip can never drop a CVE silently. CVEs an earlier batch
-// already scored are left out of the prompt (no LLM call at all when nothing
-// is left to ask about) and their first score is reused, so every component
-// keeps its rows in the VEX.
-func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, later []Vulnerability, run *scoringRun) ([]answer, error) {
+// still unanswered stops the run unless it has a row at or after end, since no
+// other batch could score it. CVEs an earlier batch already scored are left
+// out of the prompt and their first score is reused, so every component keeps
+// its row in the VEX.
+func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end int, run *scoringRun) ([]answer, error) {
 	answers := make([]answer, 0, len(batch))
 	scored := make(map[string]bool, len(batch))
 
@@ -512,30 +484,21 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, late
 			}
 			collect(entries, skipped, evidenceRef)
 
-			// Still unanswered after asking again: collect the CVEs no later
-			// batch holds another row of and fail the run once, naming all
-			// of them — waiting would only pay for batches that can never
-			// score them. The rest are recorded on the run; generateRiskScore
-			// holds their components back as pending so a later batch that
-			// scores them fills their rows in, and the end-of-run
-			// checkUnassessed stays as a safety net for that bookkeeping.
-			laterIDs := make(map[string]bool, len(later))
-			for _, v := range later {
-				if v.VulnID != "" {
-					laterIDs[v.VulnID] = true
-				}
-			}
+			// Still unanswered: a later row of the same CVE can still score
+			// it (its rows wait in pending). Without one, stop now rather than
+			// pay for the remaining batches.
 			var uncovered []string
 			for _, v := range unscored(toAsk, scored) {
-				if laterIDs[v.VulnID] {
+				if run.lastRow[v.VulnID] >= end {
 					run.missing[v.VulnID] = true
 					continue
 				}
 				uncovered = append(uncovered, v.VulnID)
 			}
 			if len(uncovered) > 0 {
-				return nil, fmt.Errorf("model returned no score for %d of %d vulnerabilities after asking again, and no later batch covers them: %s",
-					len(uncovered), len(unscored(toAsk, nil)), strings.Join(uncovered, ", "))
+				sort.Strings(uncovered)
+				return nil, fmt.Errorf("model returned no score for %s after asking again; stopping the run",
+					strings.Join(uncovered, ", "))
 			}
 		}
 	}

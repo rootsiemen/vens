@@ -34,10 +34,13 @@ import (
 )
 
 // truncatingLLM returns llm.ErrTruncated whenever a batch carries more than
-// maxPerCall vulnerabilities; smaller batches score normally. It records how it
-// was called so a test can assert the batch was actually split.
+// maxPerCall vulnerabilities; smaller batches score normally, except that a CVE
+// in skip is left out of its first skip[id] answers. It records how it was
+// called so a test can assert the batch was actually split.
 type truncatingLLM struct {
 	maxPerCall  int
+	skip        map[string]int
+	asked       map[string]int
 	calls       int // successful (non-truncated) scoring calls
 	truncations int
 	maxSeen     int // largest batch it was asked to score, truncated or not
@@ -58,9 +61,22 @@ func (m *truncatingLLM) Generate(_ context.Context, req llm.Request) (string, er
 		return "", fmt.Errorf("mock truncated: %w", llm.ErrTruncated)
 	}
 	m.calls++
+	if m.asked == nil {
+		m.asked = map[string]int{}
+	}
+	counted := map[string]bool{} // one ask per call, however often a CVE is listed
+	for _, v := range in {
+		if !counted[v.VulnID] {
+			counted[v.VulnID] = true
+			m.asked[v.VulnID]++
+		}
+	}
 
 	out := llmOutput{Results: make([]llmOutputEntry, 0, len(in))}
 	for _, v := range in {
+		if m.asked[v.VulnID] <= m.skip[v.VulnID] {
+			continue
+		}
 		out.Results = append(out.Results, llmOutputEntry{
 			VulnID:             v.VulnID,
 			ThreatAgentScore:   5,
@@ -116,6 +132,40 @@ func TestGenerator_TruncationOnSingleCVEFails(t *testing.T) {
 	err = g.GenerateRiskScore(context.Background(), testVulns(2), nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, llm.ErrTruncated))
+}
+
+// A split half still sees the rows after it. CVE-2024-0100 sits on rows 1 and
+// 7 of one batch of 10, split twice; the model skips it until its third ask.
+// The row-7 half scores it, so the run must not fail in the row-1 half.
+func TestGenerator_SplitHalfSeesLaterRows(t *testing.T) {
+	m := &truncatingLLM{maxPerCall: 3, skip: map[string]int{"CVE-2024-0100": 2}}
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
+	require.NoError(t, err)
+
+	vulns := testVulns(10)
+	vulns[1].VulnID, vulns[1].BOMRef = "CVE-2024-0100", "x1"
+	vulns[7].VulnID, vulns[7].BOMRef = "CVE-2024-0100", "x2"
+	var emitted []outputhandler.VulnRating
+	h := func(group []outputhandler.VulnRating) error {
+		emitted = append(emitted, group...)
+		return nil
+	}
+
+	require.NoError(t, g.GenerateRiskScore(context.Background(), vulns, h))
+	require.Len(t, emitted, 10, "every row is emitted, both CVE-2024-0100 rows included")
+	require.Equal(t, 3, m.asked["CVE-2024-0100"], "skipped, asked again, then scored with row 7")
+}
+
+// A CVE that can't be scored still stops the run inside a split half of the
+// second batch: the half's end is counted from the start of the run.
+func TestGenerator_FailsFastInSplitOfLaterBatch(t *testing.T) {
+	m := &truncatingLLM{maxPerCall: 2, skip: map[string]int{"CVE-2024-0005": 99}}
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 4})
+	require.NoError(t, err)
+
+	err = g.GenerateRiskScore(context.Background(), testVulns(8), nil)
+	require.EqualError(t, err, "model returned no score for CVE-2024-0005 after asking again; stopping the run")
+	require.Equal(t, 4, m.calls, "rows 0-3 in two halves, rows 4-5 and the retry; rows 6-7 never asked")
 }
 
 func testVulns(n int) []Vulnerability {
@@ -239,10 +289,8 @@ func TestGenerator_AsksAgainForSkippedVulnerabilities(t *testing.T) {
 }
 
 // A CVE the model never returns fails the run and is named, instead of going
-// missing at exit code 0. Nothing later in the run covers it, so the run fails
-// fast right after the retry instead of scoring every remaining batch first:
-// the batch aborts before its group reaches the handler, and the failed run
-// commits no VEX.
+// missing at exit code 0. No later row has it, so the batch fails right after
+// the retry, before emitting anything.
 func TestGenerator_FailsWhenASkippedVulnerabilityNeverComesBack(t *testing.T) {
 	m := newDroppingLLM(true, "CVE-2024-0002")
 	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
@@ -256,24 +304,38 @@ func TestGenerator_FailsWhenASkippedVulnerabilityNeverComesBack(t *testing.T) {
 
 	err = g.GenerateRiskScore(context.Background(), testVulns(4), h)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "CVE-2024-0002")
-	require.Contains(t, err.Error(), "model returned no score for 1 of 4 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0002")
-	require.Len(t, emitted, 0, "the batch aborts before its group is emitted; the failed run commits no VEX")
+	require.EqualError(t, err, "model returned no score for CVE-2024-0002 after asking again; stopping the run")
+	require.Len(t, emitted, 0, "the batch fails before emitting; the failed run commits no VEX")
 	require.Len(t, m.batches, 2, "asked once, asked again, then gives up")
 }
 
-// A skipped CVE with no rows in later batches fails the run before those
-// batches are paid for: with two batches and the first CVE never answered,
-// only the first batch's ask and retry reach the LLM.
+// An unanswered CVE with no later row stops the run before the next batches
+// are paid for.
 func TestGenerator_FailsFastWithoutScoringLaterBatches(t *testing.T) {
 	m := newDroppingLLM(true, "CVE-2024-0000")
 	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 2})
 	require.NoError(t, err)
 
 	err = g.GenerateRiskScore(context.Background(), testVulns(4), nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "model returned no score for 1 of 2 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0000")
+	require.EqualError(t, err, "model returned no score for CVE-2024-0000 after asking again; stopping the run")
 	require.Equal(t, []int{2, 1}, m.batches, "the second batch must never be asked about")
+}
+
+// A CVE on two rows that is never answered waits for its last row, then stops
+// the run there: the row after it is never asked.
+func TestGenerator_FailsFastAtLastRowOfCVE(t *testing.T) {
+	m := newDroppingLLM(true, "CVE-2024-0000")
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 1})
+	require.NoError(t, err)
+
+	vulns := []Vulnerability{
+		{VulnID: "CVE-2024-0000", PkgName: "openssl", Title: "t"},
+		{VulnID: "CVE-2024-0000", PkgName: "libssl3", Title: "t"},
+		{VulnID: "CVE-2024-0001", PkgName: "curl", Title: "t"},
+	}
+	err = g.GenerateRiskScore(context.Background(), vulns, nil)
+	require.EqualError(t, err, "model returned no score for CVE-2024-0000 after asking again; stopping the run")
+	require.Equal(t, []int{1, 1, 1, 1}, m.batches, "asked and asked again at both rows, curl never asked")
 }
 
 // A CVE hitting several components is asked for once, and lands on all of them.
@@ -761,28 +823,32 @@ func TestZeroLikelihood(t *testing.T) {
 	}
 }
 
-// When the model leaves CVEs unanswered after asking again, the run fails as
-// soon as no later batch can score them, naming the distinct CVEs — never
-// package rows. The end-of-run check counts distinct CVEs, not rows: two
-// unanswered CVEs, one of them on two components (two rows), report as 2 of 3.
-func TestGenerator_ErrorListsMissingWithCVECounts(t *testing.T) {
+// The error names each unanswered CVE once, in order, never once per row.
+func TestGenerator_ErrorNamesEachMissingCVEOnce(t *testing.T) {
 	m := newDroppingLLM(true, "CVE-2024-0000", "CVE-2024-0002")
 	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
 	require.NoError(t, err)
 
-	// Two unanswered CVEs, one of them on two components (two rows), one
-	// scored CVE: 4 rows, 3 distinct CVEs.
 	vulns := []Vulnerability{
-		{VulnID: "CVE-2024-0000", PkgName: "pkg-a", Title: "t"},
+		{VulnID: "CVE-2024-0002", PkgName: "pkg-a", Title: "t"},
 		{VulnID: "CVE-2024-0000", PkgName: "pkg-b", Title: "t"},
 		{VulnID: "CVE-2024-0001", PkgName: "pkg-c", Title: "t"},
-		{VulnID: "CVE-2024-0002", PkgName: "pkg-d", Title: "t"},
+		{VulnID: "CVE-2024-0000", PkgName: "pkg-d", Title: "t"},
 	}
-
 	err = g.GenerateRiskScore(context.Background(), vulns, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "model returned no score for 2 of 3 vulnerabilities after asking again, and no later batch covers them: CVE-2024-0000, CVE-2024-0002",
-		"2 of 3 distinct CVEs, not 4 rows")
+	require.EqualError(t, err, "model returned no score for CVE-2024-0000, CVE-2024-0002 after asking again; stopping the run")
+}
+
+// checkUnassessed, the end-of-run safety net, counts distinct CVEs, not rows.
+func TestScoringRun_CheckUnassessed(t *testing.T) {
+	require.NoError(t, (&scoringRun{scored: map[string]bool{"CVE-2024-0001": true}, missing: map[string]bool{}}).checkUnassessed())
+
+	run := &scoringRun{
+		scored:  map[string]bool{"CVE-2024-0001": true},
+		missing: map[string]bool{"CVE-2024-0002": true, "CVE-2024-0000": true},
+	}
+	require.EqualError(t, run.checkUnassessed(),
+		"model returned no score for 2 of 3 vulnerabilities, after asking again: CVE-2024-0000, CVE-2024-0002")
 }
 
 // recordingLLM records the temperature of every request it receives and

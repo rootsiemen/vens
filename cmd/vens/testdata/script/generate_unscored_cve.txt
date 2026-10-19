@@ -1,10 +1,8 @@
-# A CVE the model never scores, even when asked again, fails the run at the
-# first batch when no later batch covers it: the rows after it are never
-# scored, so CVE-2024-1234 must not appear as scored. Neither the VEX nor the
-# attestation is written.
+# A CVE the model never scores, even when asked again, stops the run at its
+# batch: the next CVE is never scored, and no VEX or attestation is written.
 env VENS_MOCK_LLM_SKIP=CVE-2024-5678
 ! exec vens generate --llm=mock --llm-batch-size=1 --attest --config-file=config.yaml --sbom-serial-number=urn:uuid:22222222-2222-2222-2222-222222222222 report.json out.cdx.json
-stderr 'model returned no score for 1 of 1 vulnerabilities after asking again, and no later batch covers them: CVE-2024-5678'
+stderr 'model returned no score for CVE-2024-5678 after asking again; stopping the run'
 ! stderr 'Scored vulnerability.*CVE-2024-1234'
 ! exists out.cdx.json
 ! exists out.attestation.cdx.json
