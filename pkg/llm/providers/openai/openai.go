@@ -94,11 +94,17 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 			},
 		},
 	}
-	// Reasoning models (o-series, gpt-5*) reject an explicit temperature and
-	// only accept their default; every other model gets it, but only when the
-	// user passed --llm-temperature — without the flag nothing is sent and the
-	// model uses its own default.
-	if !isReasoningModel(c.model) && req.Temperature != nil {
+	// Reasoning models (o-series, gpt-5*) refuse an explicit temperature and only
+	// accept their default: fail clearly instead of silently dropping the
+	// flag, which also kept the attestation recording a temperature the run
+	// never used. Every other model gets it, but only when the user passed
+	// --llm-temperature — without the flag nothing is sent and the model uses
+	// its own default.
+	if llm.ModelRefusesTemperature(c.model) {
+		if req.Temperature != nil {
+			return "", fmt.Errorf("openai: %q refuses an explicit temperature: omit --llm-temperature for this model", c.model)
+		}
+	} else if req.Temperature != nil {
 		params.Temperature = openai.Float(*req.Temperature)
 	}
 	if req.Seed != 0 {
@@ -129,13 +135,6 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 	}
 
 	return choice.Message.Content, nil
-}
-
-// isReasoningModel reports whether model is an OpenAI reasoning model (o-series or gpt-5*).
-func isReasoningModel(model string) bool {
-	m := strings.ToLower(model)
-	return strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") ||
-		strings.HasPrefix(m, "o4") || strings.HasPrefix(m, "gpt-5")
 }
 
 func unsupportedStructuredOutput(err error) (string, bool) {
