@@ -16,9 +16,9 @@ Mitigations Vens applies:
 - Final OWASP score is computed in Go from the LLM's four 0–9 component scores, so small drift averages out.
 - Same prompt, same schema, same ordering on every run.
 
-If you need strict reproducibility for audit evidence at a point in time, pin a local Ollama model tag (model tags are immutable on disk) and archive `--debug-dir` output alongside the VEX. Together they give you a byte-exact record.
+If you need strict reproducibility for audit evidence at a point in time, pin a local Ollama model tag (model tags are immutable on disk), pass `--llm-temperature 0 --llm-seed <n>`, and archive `--debug-dir` output alongside the VEX. Together they give you a byte-exact record.
 
-You can also pass [`--attest`](../reference/generate.md#-attest) to write a CDXA sidecar that records, per CVE, the model, seed, temperature, and SHA-256 hashes of the prompt, scan report and `config.yaml`, plus the raw response. It captures the evidence to reproduce a run later. It is point-in-time evidence, not a cryptographic signature.
+You can also pass [`--attest`](../reference/generate.md#-attest) to write a CDXA sidecar that records, per CVE, the model, seed, temperature (recorded only when the flag is passed), and SHA-256 hashes of the prompt, scan report and `config.yaml`, plus the raw response. It captures the evidence to reproduce a run later. It is point-in-time evidence, not a cryptographic signature.
 
 ---
 

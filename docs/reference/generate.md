@@ -86,7 +86,7 @@ vens generate --llm-batch-size 15 ...
 
 ### `--llm-temperature <float>`
 
-LLM sampling temperature. Only sent to the provider when the flag is explicitly passed — by default no temperature is sent at all (the `0.0` default is never forwarded on its own). Values > 0 introduce randomness and are not recommended for production scoring. Note: some models (e.g. current Anthropic generations) reject an explicit temperature outright, so passing the flag with such a model fails fast with a clear error instead of silently dropping it.
+LLM sampling temperature. Only sent to the provider when the flag is explicitly passed — by default no temperature is sent at all (the `0.0` default is never forwarded on its own), so each provider applies its own default instead: `0.8` for Ollama, `1.0` for OpenAI, Gemini and Anthropic. Values above `0` — including those provider defaults — introduce randomness and are not recommended for production scoring. Passing `--llm-temperature 0` together with `--llm-seed` reduces drift between runs, but it doesn't make runs deterministic. Note: some models don't take an explicit temperature. Current Anthropic generations reject it, so passing the flag with one of them fails fast with a clear error; OpenAI reasoning models (o-series and `gpt-5*`, which includes the default `gpt-5.4-mini`) ignore it.
 
 ### `--llm-seed <int>`
 
@@ -98,7 +98,7 @@ Seed forwarded to the LLM when the provider supports it. Default: `0` (no explic
     - Compute the final OWASP score in Go from the LLM's four 0-9 component scores (`pkg/generator/generator.go`). Small drifts in the component scores are absorbed by the arithmetic.
     - Keep the same prompt, schema and ordering across runs.
 
-    In practice, expect **score drift of ±1–3 points on a minority of CVEs** between runs with the same config and model. If you need strict reproducibility (for audit evidence at a fixed point in time), pin a local Ollama model version **and** archive the `--debug-dir` output — those two together give you a byte-exact record of what was sent and returned.
+    In practice, expect **score drift of ±1–3 points on a minority of CVEs** between runs with the same config and model. If you need strict reproducibility (for audit evidence at a fixed point in time), pin a local Ollama model version, pass `--llm-temperature 0 --llm-seed <n>`, **and** archive the `--debug-dir` output — together they give you a byte-exact record of what was sent and returned.
 
 ### `--input-format <auto|trivy|grype>`
 

@@ -83,7 +83,7 @@ This is expected within a small band. See the ["Reproducibility is best-effort"]
 
 What to do:
 
-- If you need strict reproducibility for audit evidence at a fixed point in time, pin a local Ollama model version (model tags are immutable) **and** archive `--debug-dir` output. Together they give you a byte-exact record of what was sent and returned.
+- If you need strict reproducibility for audit evidence at a fixed point in time, pin a local Ollama model version (model tags are immutable), pass `--llm-temperature 0 --llm-seed <n>`, **and** archive `--debug-dir` output. Together they give you a byte-exact record of what was sent and returned.
 - If a specific CVE is jumping across severity buckets between runs, it usually means the LLM is genuinely uncertain about that CVE in your context — check the `--debug-dir` reasoning for that batch.
 
 ---

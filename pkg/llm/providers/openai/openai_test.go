@@ -97,8 +97,9 @@ func newTestClient(t *testing.T, model, baseURL string) *Client {
 	return c
 }
 
-// A gpt-4o request carries the strict json_schema, the system/user split, and an
-// explicit temperature=0 (the deterministic default) plus a non-zero seed.
+// A gpt-4o request carries the strict json_schema, the system/user split, an
+// explicit temperature=0 plus a non-zero seed. The explicit flag value is
+// forwarded as-is.
 func TestGenerate_RequestShape(t *testing.T) {
 	url, captured := fakeServer(t, http.StatusOK, successBody)
 	c := newTestClient(t, "gpt-4o", url)
@@ -148,7 +149,7 @@ func TestGenerate_RequestShape(t *testing.T) {
 		t.Errorf("schema mismatch:\n got %v\nwant %v", js["schema"], wantSchema)
 	}
 
-	// temperature 0 is sent explicitly for non-reasoning models (determinism).
+	// an explicitly passed temperature is forwarded as-is (including 0).
 	if temp, ok := req["temperature"]; !ok || temp.(float64) != 0 {
 		t.Errorf("temperature = %v (present=%v), want 0", req["temperature"], ok)
 	}
@@ -184,6 +185,33 @@ func TestGenerate_OmitsTemperatureAndSeed(t *testing.T) {
 			t.Error("seed must be omitted when 0")
 		}
 	})
+
+	t.Run("temperature omitted when flag not passed", func(t *testing.T) {
+		url, captured := fakeServer(t, http.StatusOK, successBody)
+		c := newTestClient(t, "gpt-4o", url)
+		if _, err := c.Generate(context.Background(), llm.Request{Schema: json.RawMessage(testSchema)}); err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if _, ok := (*captured)["temperature"]; ok {
+			t.Error("temperature must be omitted when --llm-temperature wasn't passed")
+		}
+	})
+}
+
+// An explicitly passed temperature is forwarded as-is, including non-zero
+// values (0 is already covered by TestGenerate_RequestShape).
+func TestGenerate_ForwardsExplicitTemperature(t *testing.T) {
+	url, captured := fakeServer(t, http.StatusOK, successBody)
+	c := newTestClient(t, "gpt-4o", url)
+	if _, err := c.Generate(context.Background(), llm.Request{
+		Schema:      json.RawMessage(testSchema),
+		Temperature: fptr(0.7),
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if temp, ok := (*captured)["temperature"]; !ok || temp.(float64) != 0.7 {
+		t.Errorf("temperature = %v (present=%v), want 0.7", (*captured)["temperature"], ok)
+	}
 }
 
 func TestGenerate_Branches(t *testing.T) {

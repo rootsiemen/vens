@@ -154,8 +154,26 @@ func TestGenerate_SeedOmittedWhenZero(t *testing.T) {
 	if _, ok := gen["seed"]; ok {
 		t.Fatal("seed must be omitted when req.Seed == 0")
 	}
-	if _, ok := gen["temperature"]; !ok {
-		t.Fatal("temperature must be present even at 0")
+	if _, ok := gen["temperature"]; ok {
+		t.Fatal("temperature must be omitted when --llm-temperature wasn't passed")
+	}
+}
+
+// An explicitly passed temperature is forwarded as-is, including non-zero
+// values (0 is already covered by TestGenerate_RequestShape).
+func TestGenerate_ForwardsExplicitTemperature(t *testing.T) {
+	var rec recordedReq
+	srv := newTestServer(t, http.StatusOK, `{"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}]}`, &rec)
+	c := newTestClient(t, srv.URL)
+	if _, err := c.Generate(context.Background(), llm.Request{Human: "hi", Temperature: fptr(0.7)}); err != nil {
+		t.Fatal(err)
+	}
+	gen, _ := rec.body["generationConfig"].(map[string]any)
+	if gen == nil {
+		t.Fatal("missing generationConfig")
+	}
+	if gen["temperature"] != float64(0.7) {
+		t.Fatalf("temperature = %v, want 0.7", gen["temperature"])
 	}
 }
 

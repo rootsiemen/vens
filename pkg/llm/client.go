@@ -29,26 +29,13 @@ type Request struct {
 	Schema json.RawMessage
 	// Temperature is the sampling temperature forwarded to the provider, nil
 	// when the user did not pass --llm-temperature (cmd/vens checks
-	// flags.Changed). Providers that must distinguish an explicit user value
-	// from the flag default (Anthropic: current model generations reject an
-	// explicit temperature outright) only send it when non-nil.
-	//
-	// TODO: other providers (openai, google, ollama) still send 0 when the flag
-	// isn't passed; thread the nil through to them too (follow-up ticket).
+	// flags.Changed). Nil means the flag wasn't passed: nothing is sent and
+	// the provider uses its own default; every provider only forwards it
+	// when non-nil.
 	Temperature *float64
 	// Seed is applied only when non-zero. Providers without a seed parameter
 	// (e.g. Anthropic) ignore it.
 	Seed int
-}
-
-// TemperatureOrZero returns the explicit temperature, or 0 when the user did
-// not pass --llm-temperature. Temporary shim until the follow-up ticket
-// threads the nil through every provider.
-func TemperatureOrZero(req Request) float64 {
-	if req.Temperature == nil {
-		return 0
-	}
-	return *req.Temperature
 }
 
 // Client is the minimal LLM surface vens needs: one structured-output call

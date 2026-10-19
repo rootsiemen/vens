@@ -126,6 +126,64 @@ func TestGenerate_SeedOmittedWhenZero(t *testing.T) {
 	if _, ok := got.Options["seed"]; ok {
 		t.Errorf("seed present but Seed==0: %v", got.Options["seed"])
 	}
+	if _, ok := got.Options["temperature"]; ok {
+		t.Errorf("temperature present but --llm-temperature wasn't passed: %v", got.Options["temperature"])
+	}
+}
+
+// An explicitly passed temperature is forwarded as-is, including non-zero
+// values (0 is already covered by TestGenerate_RequestShapeAndSuccess).
+func TestGenerate_ForwardsExplicitTemperature(t *testing.T) {
+	var got oapi.ChatRequest
+	srv := newFakeServer(t, 200,
+		`{"model":"m","message":{"content":"{}"},"done":true,"done_reason":"stop"}`, &got)
+	t.Setenv("OLLAMA_HOST", srv.URL)
+	c, _ := New("m")
+	if _, err := c.Generate(context.Background(), llm.Request{Human: "h", Temperature: fptr(0.7)}); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got.Options["temperature"].(float64); !ok || v != 0.7 {
+		t.Errorf("temperature = %v (%T), want 0.7", got.Options["temperature"], got.Options["temperature"])
+	}
+}
+
+// The temperature/seed guard builds Options only from what was actually
+// passed: nothing passed means no Options at all.
+func TestGenerate_OptionsGuard(t *testing.T) {
+	tests := []struct {
+		name        string
+		temperature *float64
+		seed        int
+		wantOpts    map[string]any
+	}{
+		{name: "no temperature no seed", temperature: nil, seed: 0, wantOpts: map[string]any{}},
+		{name: "seed without temperature", temperature: nil, seed: 42, wantOpts: map[string]any{"seed": float64(42)}},
+		{name: "temperature without seed", temperature: fptr(0.7), seed: 0, wantOpts: map[string]any{"temperature": 0.7}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got oapi.ChatRequest
+			srv := newFakeServer(t, 200,
+				`{"model":"m","message":{"content":"{}"},"done":true,"done_reason":"stop"}`, &got)
+			t.Setenv("OLLAMA_HOST", srv.URL)
+			c, _ := New("m")
+			if _, err := c.Generate(context.Background(), llm.Request{
+				Human:       "h",
+				Temperature: tt.temperature,
+				Seed:        tt.seed,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Options) != len(tt.wantOpts) {
+				t.Fatalf("options = %v, want %v", got.Options, tt.wantOpts)
+			}
+			for k, want := range tt.wantOpts {
+				if got.Options[k] != want {
+					t.Errorf("options[%q] = %v, want %v", k, got.Options[k], want)
+				}
+			}
+		})
+	}
 }
 
 func TestGenerate_Branches(t *testing.T) {
