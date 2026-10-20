@@ -1022,3 +1022,46 @@ func TestGenerator_ZeroLikelihoodWarnSurvivesTruncatedRetry(t *testing.T) {
 	}
 	require.Equal(t, 1, warns, "the verdict is logged once, even when the retry truncates")
 }
+
+// A zero-likelihood answer with no reasoning is a refusal, not a verdict
+// (issue #337): the run fails fast instead of publishing it as info.
+func TestGenerator_ZeroLikelihoodWithoutReasoningFailsFast(t *testing.T) {
+	m := &scriptedLLM{answer: func(_ int, _ string) llmOutputEntry {
+		return llmOutputEntry{ThreatAgentScore: 0, VulnerabilityScore: 0, TechnicalImpact: 0, BusinessImpact: 1}
+	}}
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
+	require.NoError(t, err)
+
+	var got []outputhandler.VulnRating
+	h := func(group []outputhandler.VulnRating) error {
+		got = append(got, group...)
+		return nil
+	}
+
+	err = g.GenerateRiskScore(context.Background(), testVulns(2), h)
+	require.EqualError(t, err, "model refused to assess CVE-2024-0000, CVE-2024-0001 after asking again (zero scores, no reasoning); stopping the run")
+	require.Empty(t, got, "nothing is published when the model refuses")
+}
+
+// A refusal on the first ask is asked about again alone: if the model then
+// answers with reasoning, the "not reachable here" verdict is published and
+// the run succeeds.
+func TestGenerator_ZeroLikelihoodRefusalRecoveredOnReask(t *testing.T) {
+	m := &scriptedLLM{answer: func(call int, _ string) llmOutputEntry {
+		if call == 1 {
+			return llmOutputEntry{ThreatAgentScore: 0, VulnerabilityScore: 0, TechnicalImpact: 0, BusinessImpact: 1}
+		}
+		return llmOutputEntry{ThreatAgentScore: 0, VulnerabilityScore: 0, TechnicalImpact: 0, BusinessImpact: 1, Reasoning: "not reachable here"}
+	}}
+	g, err := New(Opts{LLM: m, Config: &riskconfig.Config{}, BatchSize: 10})
+	require.NoError(t, err)
+
+	var got []outputhandler.VulnRating
+	h := func(group []outputhandler.VulnRating) error {
+		got = append(got, group...)
+		return nil
+	}
+
+	require.NoError(t, g.GenerateRiskScore(context.Background(), testVulns(2), h))
+	require.Len(t, got, 2, "the verdict is published once the model answers with reasoning")
+}

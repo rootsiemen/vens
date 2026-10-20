@@ -401,6 +401,7 @@ func zeroLikelihood(e llmOutputEntry) bool {
 func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end int, run *scoringRun) ([]answer, error) {
 	answers := make([]answer, 0, len(batch))
 	scored := make(map[string]bool, len(batch))
+	refused := make(map[string]bool, len(batch))
 
 	// Leave out every CVE an earlier batch already scored: asking the model
 	// about it again would only have its answer dropped.
@@ -433,6 +434,15 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end 
 					slog.DebugContext(ctx, "ignoring answer for a CVE that wasn't asked about in this call",
 						"vuln", e.VulnID)
 				}
+				continue
+			}
+			if zeroLikelihood(e) && strings.TrimSpace(e.Reasoning) == "" {
+				// A zero-likelihood answer with no reasoning is a refusal, not a
+				// "not reachable here" verdict (issue #337): leave it unscored so
+				// the ask-again / fail-fast path handles it.
+				slog.DebugContext(ctx, "ignoring zero-likelihood answer with no reasoning; treating as unscored",
+					"vuln", e.VulnID)
+				refused[e.VulnID] = true
 				continue
 			}
 			scored[e.VulnID] = true
@@ -497,6 +507,16 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end 
 			}
 			if len(uncovered) > 0 {
 				sort.Strings(uncovered)
+				var refusedIDs []string
+				for _, id := range uncovered {
+					if refused[id] {
+						refusedIDs = append(refusedIDs, id)
+					}
+				}
+				if len(refusedIDs) == len(uncovered) {
+					return nil, fmt.Errorf("model refused to assess %s after asking again (zero scores, no reasoning); stopping the run",
+						strings.Join(refusedIDs, ", "))
+				}
 				return nil, fmt.Errorf("model returned no score for %s after asking again; stopping the run",
 					strings.Join(uncovered, ", "))
 			}
