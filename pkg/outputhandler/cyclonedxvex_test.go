@@ -562,3 +562,72 @@ func TestCycloneDxVexWriter_Close_SkipsUnreferencedVuln(t *testing.T) {
 		t.Error("CVE-2 has no component, it should not be in the VEX")
 	}
 }
+
+func TestCycloneDxVexWriter_Close_AnalysisDetail(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewCycloneDxVexOutputHandler(&buf, "test-uuid", 1, "", cyclonedx.SpecVersion1_6)
+
+	score := 45.0
+	const vector = "SL:1/M:8/O:4/S:2/ED:6/EE:8/A:5/ID:2/LC:2/LI:9/LAV:9/LAC:7/FD:7/RD:5/NC:2/PV:9"
+	if err := h.HandleVulnRatings([]VulnRating{
+		{
+			VulnID: "CVE-2026-1234",
+			BOMRef: "pkg:npm/foo@1.0.0",
+			Rating: cyclonedx.VulnerabilityRating{
+				Method:   cyclonedx.ScoringMethodOWASP,
+				Score:    &score,
+				Severity: cyclonedx.SeverityHigh,
+				Vector:   vector,
+			},
+			Source: &cyclonedx.Source{Name: "NVD"},
+		},
+	}); err != nil {
+		t.Fatalf("HandleVulnRatings: %v", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var decoded struct {
+		Vulnerabilities []struct {
+			ID       string `json:"id"`
+			Analysis *struct {
+				Detail string `json:"detail"`
+			} `json:"analysis"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.Vulnerabilities) != 1 {
+		t.Fatalf("got %d vulns, want 1", len(decoded.Vulnerabilities))
+	}
+	v := decoded.Vulnerabilities[0]
+	if v.Analysis == nil {
+		t.Fatal("vulnerabilities[0].analysis is missing")
+	}
+	want := `OWASP risk rating 45.0 (high) from vector "SL:1/M:8/O:4/S:2/ED:6/EE:8/A:5/ID:2/LC:2/LI:9/LAV:9/LAC:7/FD:7/RD:5/NC:2/PV:9".`
+	if v.Analysis.Detail != want {
+		t.Errorf("analysis.detail = %q, want %q", v.Analysis.Detail, want)
+	}
+}
+
+func TestAnalysisDetail(t *testing.T) {
+	score := 7.5
+	got := analysisDetail(cyclonedx.VulnerabilityRating{
+		Method:   cyclonedx.ScoringMethodOWASP,
+		Score:    &score,
+		Severity: cyclonedx.SeverityLow,
+		Vector:   "SL:0/M:0/O:0/S:0/ED:0/EE:0/A:0/ID:9/LC:0/LI:0/LAV:0/LAC:0/FD:1/RD:1/NC:1/PV:1",
+	})
+	want := `OWASP risk rating 7.5 (low) from vector "SL:0/M:0/O:0/S:0/ED:0/EE:0/A:0/ID:9/LC:0/LI:0/LAV:0/LAC:0/FD:1/RD:1/NC:1/PV:1".`
+	if got != want {
+		t.Errorf("analysisDetail = %q, want %q", got, want)
+	}
+
+	// A nil score must not panic; it degrades to 0.0.
+	got = analysisDetail(cyclonedx.VulnerabilityRating{Method: cyclonedx.ScoringMethodOWASP})
+	if !strings.HasPrefix(got, "OWASP risk rating 0.0") {
+		t.Errorf("analysisDetail with nil score = %q, want 0.0 prefix", got)
+	}
+}

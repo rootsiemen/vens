@@ -154,6 +154,14 @@ func (c *cycloneDxVexWriter) Close() error {
 			Source:  g.Source,
 			Ratings: &[]cyclonedx.VulnerabilityRating{g.Rating},
 			Affects: &[]cyclonedx.Affects{{Ref: bomLink}},
+			// A short justification derived from the (score, severity, vector)
+			// triple only — everything it cites is already in the VEX, so it
+			// leaks nothing and is stable across runs. Dependency-Track stores
+			// and displays analysis.detail, so the score no longer lands there
+			// unexplained (#316).
+			Analysis: &cyclonedx.VulnerabilityAnalysis{
+				Detail: analysisDetail(g.Rating),
+			},
 		}
 		affectsSet[g.VulnID] = map[string]bool{bomLink: true}
 	}
@@ -181,6 +189,17 @@ func (c *cycloneDxVexWriter) Close() error {
 	}
 	c.closed = true
 	return nil
+}
+
+// analysisDetail builds the short, always-on justification for a score from
+// the (score, severity, vector) triple only — everything it cites is already
+// in the VEX, so it leaks nothing and is stable across runs. See #316.
+func analysisDetail(r cyclonedx.VulnerabilityRating) string {
+	score := 0.0
+	if r.Score != nil {
+		score = *r.Score
+	}
+	return fmt.Sprintf("%s risk rating %.1f (%s) from vector %q.", r.Method, score, r.Severity, r.Vector)
 }
 
 func jsonSchemaFor(v cyclonedx.SpecVersion) string {
