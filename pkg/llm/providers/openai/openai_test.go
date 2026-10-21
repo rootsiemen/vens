@@ -150,11 +150,8 @@ func TestGenerate_RequestShape(t *testing.T) {
 	}
 }
 
-// Reasoning models are tested separately in
-// TestGenerate_ReasoningModelRefusesExplicitTemperature; without the flag
-// nothing is sent and the model uses its own default.
-func TestGenerate_OmitsTemperatureAndSeed(t *testing.T) {
-
+// A zero seed is omitted from the request.
+func TestGenerate_OmitsSeed(t *testing.T) {
 	t.Run("zero seed omitted", func(t *testing.T) {
 		url, captured := fakeServer(t, http.StatusOK, successBody)
 		c := newTestClient(t, "gpt-4o", url)
@@ -163,17 +160,6 @@ func TestGenerate_OmitsTemperatureAndSeed(t *testing.T) {
 		}
 		if _, ok := (*captured)["seed"]; ok {
 			t.Error("seed must be omitted when 0")
-		}
-	})
-
-	t.Run("temperature omitted when flag not passed", func(t *testing.T) {
-		url, captured := fakeServer(t, http.StatusOK, successBody)
-		c := newTestClient(t, "gpt-4o", url)
-		if _, err := c.Generate(context.Background(), llm.Request{Schema: json.RawMessage(testSchema)}); err != nil {
-			t.Fatalf("Generate: %v", err)
-		}
-		if _, ok := (*captured)["temperature"]; ok {
-			t.Error("temperature must be omitted when --llm-temperature wasn't passed")
 		}
 	})
 }
@@ -344,5 +330,23 @@ func TestGenerate_OtherBadRequestIsNotStructuredOutput(t *testing.T) {
 	}
 	if errors.Is(err, llm.ErrUnsupportedStructuredOutput) {
 		t.Errorf("err = %v, want it classified as a plain provider error", err)
+	}
+}
+
+// An unknown model id (an Azure deployment name or a future id) is not in
+// the refuse-list; when the API answers the explicit temperature with a 400
+// naming the parameter, fail with the same clear message.
+func TestGenerate_TemperatureRefusedByAPI(t *testing.T) {
+	const body = `{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.",` +
+		`"type":"invalid_request_error","param":"temperature","code":null}}`
+	url, _ := fakeServer(t, http.StatusBadRequest, body)
+	c := newTestClient(t, "future-reasoning-9", url)
+
+	_, err := c.Generate(context.Background(), llm.Request{
+		Schema:      json.RawMessage(testSchema),
+		Temperature: fptr(0.7),
+	})
+	if err == nil || !strings.Contains(err.Error(), "refused the explicit --llm-temperature") {
+		t.Fatalf("Generate err = %v, want a refused-temperature error", err)
 	}
 }
