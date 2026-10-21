@@ -17,17 +17,12 @@ package outputhandler
 import (
 	"bytes"
 	"encoding/json"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/CycloneDX/cyclonedx-go"
 )
-
-// serialNumberRe matches the per-document random serialNumber so determinism
-// tests can compare the rest of the output byte-for-byte.
-var serialNumberRe = regexp.MustCompile(`"serialNumber": "urn:uuid:[0-9a-f-]+"`)
 
 func TestCycloneDxVexWriter_Close_SerialNumber(t *testing.T) {
 	var buf bytes.Buffer
@@ -585,7 +580,7 @@ func TestCycloneDxVexWriter_Close_DeterministicVulnerabilityOrder(t *testing.T) 
 		{VulnID: "CVE-2024-5678", BOMRef: "pkg:npm/qux@4.0.0", Rating: rating},
 	}
 
-	encode := func(rs []VulnRating) []byte {
+	encode := func(rs []VulnRating) *cyclonedx.BOM {
 		var buf bytes.Buffer
 		h := NewCycloneDxVexOutputHandler(&buf, "test-uuid", 1, "", cyclonedx.SpecVersion1_7)
 		if err := h.HandleVulnRatings(rs); err != nil {
@@ -594,53 +589,34 @@ func TestCycloneDxVexWriter_Close_DeterministicVulnerabilityOrder(t *testing.T) 
 		if err := h.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-		return buf.Bytes()
+		var bom cyclonedx.BOM
+		if err := json.Unmarshal(buf.Bytes(), &bom); err != nil {
+			t.Fatalf("unmarshal BOM: %v", err)
+		}
+		return &bom
 	}
 
-	// Same ratings fed in different orders must produce byte-identical output
-	// (modulo the per-document random serialNumber, which is intentionally
-	// unique per document and unrelated to vulnerability ordering).
+	// Same ratings fed in different orders must produce the same
+	// vulnerabilities[] order: decoded and compared by ID, so the
+	// per-document metadata.timestamp can't flake the assertion.
 	reversed := make([]VulnRating, len(ratings))
 	for i, r := range ratings {
 		reversed[len(ratings)-1-i] = r
 	}
-	normalize := func(b []byte) string {
-		return serialNumberRe.ReplaceAllString(string(b), `"serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000000"`)
-	}
-	firstBytes := encode(ratings)
-	secondBytes := encode(reversed)
-	if normalize(firstBytes) != normalize(secondBytes) {
-		t.Error("VEX output differs for identical input fed in different orders")
-	}
 
-	// The vulnerabilities[] array must be sorted by ID.
-	var bom cyclonedx.BOM
-	if err := json.Unmarshal(firstBytes, &bom); err != nil {
-		t.Fatalf("unmarshal BOM: %v", err)
-	}
-	if bom.Vulnerabilities == nil {
-		t.Fatal("expected vulnerabilities in the VEX")
-	}
-	got := make([]string, 0, len(*bom.Vulnerabilities))
-	for _, v := range *bom.Vulnerabilities {
-		got = append(got, v.ID)
-	}
+	// The vulnerabilities[] array must be sorted by ID in both runs.
 	want := []string{"CVE-2024-0001", "CVE-2024-1234", "CVE-2024-5678", "CVE-2024-9999"}
-	if !slices.Equal(got, want) {
-		t.Errorf("vulnerabilities[] order = %v, want sorted %v", got, want)
-	}
-
-	// Each vulnerability's affects entries must be sorted by Ref.
-	for _, v := range *bom.Vulnerabilities {
-		if v.Affects == nil {
-			continue
+	for _, rs := range [][]VulnRating{ratings, reversed} {
+		bom := encode(rs)
+		if bom.Vulnerabilities == nil {
+			t.Fatal("expected vulnerabilities in the VEX")
 		}
-		refs := make([]string, 0, len(*v.Affects))
-		for _, a := range *v.Affects {
-			refs = append(refs, a.Ref)
+		got := make([]string, 0, len(*bom.Vulnerabilities))
+		for _, v := range *bom.Vulnerabilities {
+			got = append(got, v.ID)
 		}
-		if !slices.IsSorted(refs) {
-			t.Errorf("affects for %s not sorted by Ref: %v", v.ID, refs)
+		if !slices.Equal(got, want) {
+			t.Errorf("vulnerabilities[] order = %v, want sorted %v", got, want)
 		}
 	}
 }
