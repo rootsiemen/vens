@@ -113,6 +113,13 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (string, error) 
 
 	resp, err := c.api.Chat.Completions.New(ctx, params)
 	if err != nil {
+		if req.Temperature != nil && temperatureRefused(err) {
+			// Unknown model id (an Azure deployment name or a future id),
+			// or a stale refuse-list: the API refused the explicit
+			// temperature. Fail with a clear message instead of surfacing
+			// the raw 400.
+			return "", fmt.Errorf("openai: %q refused the explicit --llm-temperature: omit the flag for this model", c.model)
+		}
 		if detail, ok := unsupportedStructuredOutput(err); ok {
 			return "", fmt.Errorf("openai: %q: %w, see docs/concepts/choosing-a-model.md (%s)",
 				c.model, llm.ErrUnsupportedStructuredOutput, detail)
@@ -146,4 +153,16 @@ func unsupportedStructuredOutput(err error) (string, bool) {
 		return "", false
 	}
 	return apiErr.Message, true
+}
+
+// temperatureRefused reports whether err is the API refusing an explicit
+// temperature parameter: the API answers unknown model ids (an Azure
+// deployment name or a future id) with a 400 naming the offending parameter,
+// so check apiErr.Param like anthropic's temperatureDeprecated.
+func temperatureRefused(err error) bool {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	return apiErr.Param == "temperature"
 }
