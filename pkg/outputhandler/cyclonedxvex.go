@@ -161,13 +161,6 @@ func (c *cycloneDxVexWriter) Close() error {
 
 	vulns := make([]cyclonedx.Vulnerability, 0, len(vulnMap))
 	for _, v := range vulnMap {
-		// Sort each vulnerability's Affects by Ref so the document is stable
-		// even if the same components arrive in a different order.
-		if v.Affects != nil {
-			slices.SortFunc(*v.Affects, func(a, b cyclonedx.Affects) int {
-				return strings.Compare(a.Ref, b.Ref)
-			})
-		}
 		vulns = append(vulns, *v)
 	}
 
