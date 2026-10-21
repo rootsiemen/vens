@@ -60,10 +60,11 @@ type ClaimInput struct {
 	Score       float64
 	Severity    string
 	Reasoning   string
-	// Reused marks a claim whose score was carried over from the batch that
-	// first assessed the CVE, rather than from an LLM call whose prompt
-	// mentioned this package. The claim still cites the first batch's
-	// evidence bundle, and says so.
+	// Reused marks a claim whose cited evidence bundle's prompt did not
+	// contain this claim's (package, version) row: either the score was
+	// carried over from an earlier batch's assessment of the CVE, or the
+	// row was held back as pending and filled in by a later batch. The
+	// claim still cites that batch's evidence bundle, and says so.
 	Reused bool
 }
 
@@ -266,10 +267,10 @@ func (b *Builder) addClaims(decl *cyclonedx.Declarations) {
 		predicate := fmt.Sprintf("%s on %s %s assessed at OWASP risk %.2f (%s)",
 			c.in.VulnID, c.in.CompName, c.in.CompVersion, c.in.Score, c.in.Severity)
 		if c.in.Reused {
-			// The score was carried over from the CVE's first assessment; the
-			// cited evidence bundle's prompt never mentioned this package.
-			predicate += "; score reused from the first assessment of this CVE" +
-				" (this package was not in that batch's prompt)"
+			// The cited batch's prompt never had this package's row: the
+			// score was either carried over from an earlier assessment of
+			// the CVE or filled in by a later batch that scored the CVE.
+			predicate += "; this package was not in the cited batch's prompt"
 		}
 		claims = append(claims, cyclonedx.Claim{
 			BOMRef:    ref,
