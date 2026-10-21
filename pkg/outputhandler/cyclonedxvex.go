@@ -76,24 +76,30 @@ func ParseSpecVersion(s string) (cyclonedx.SpecVersion, error) {
 // vulnerability ratings and emits a proper CycloneDX VEX BOM on Close.
 // vexUUID is the VEX document's serialNumber UUID; pass "" to generate one.
 // specVersion selects the CycloneDX spec version the BOM is encoded to.
-func NewCycloneDxVexOutputHandler(w io.Writer, sbomUUID string, sbomVersion int, vexUUID string, specVersion cyclonedx.SpecVersion) OutputHandler {
+// analysisDetail is opt-in: when true each vulnerability carries an analysis
+// block with the score justification in detail; when false no analysis
+// block is emitted at all. Dependency-Track 5.1+ unsuppresses findings on
+// an analysis block that carries no state, so the default stays off (#316).
+func NewCycloneDxVexOutputHandler(w io.Writer, sbomUUID string, sbomVersion int, vexUUID string, specVersion cyclonedx.SpecVersion, analysisDetail bool) OutputHandler {
 	return &cycloneDxVexWriter{
-		w:           w,
-		sbomUUID:    sbomUUID,
-		sbomVersion: sbomVersion,
-		vexUUID:     vexUUID,
-		specVersion: specVersion,
+		w:              w,
+		sbomUUID:       sbomUUID,
+		sbomVersion:    sbomVersion,
+		vexUUID:        vexUUID,
+		specVersion:    specVersion,
+		analysisDetail: analysisDetail,
 	}
 }
 
 type cycloneDxVexWriter struct {
-	w           io.Writer
-	r           []VulnRating
-	sbomUUID    string
-	sbomVersion int
-	vexUUID     string
-	specVersion cyclonedx.SpecVersion
-	closed      bool
+	w              io.Writer
+	r              []VulnRating
+	sbomUUID       string
+	sbomVersion    int
+	vexUUID        string
+	specVersion    cyclonedx.SpecVersion
+	analysisDetail bool
+	closed         bool
 }
 
 func (c *cycloneDxVexWriter) HandleVulnRatings(vr []VulnRating) error {
@@ -154,14 +160,16 @@ func (c *cycloneDxVexWriter) Close() error {
 			Source:  g.Source,
 			Ratings: &[]cyclonedx.VulnerabilityRating{g.Rating},
 			Affects: &[]cyclonedx.Affects{{Ref: bomLink}},
-			// A short justification derived from the (score, severity, vector)
-			// triple only — everything it cites is already in the VEX, so it
-			// leaks nothing and is stable across runs. Dependency-Track stores
-			// and displays analysis.detail, so the score no longer lands there
-			// unexplained (#316).
-			Analysis: &cyclonedx.VulnerabilityAnalysis{
+		}
+		if c.analysisDetail {
+			// A short justification derived from the (score, severity,
+			// vector) triple only — everything it cites is already in the
+			// VEX, so it leaks nothing and is stable across runs. Opt-in
+			// only: Dependency-Track 5.1+ unsuppresses findings when an
+			// analysis block carries no state (#316).
+			vulnMap[g.VulnID].Analysis = &cyclonedx.VulnerabilityAnalysis{
 				Detail: analysisDetail(g.Rating),
-			},
+			}
 		}
 		affectsSet[g.VulnID] = map[string]bool{bomLink: true}
 	}
@@ -191,15 +199,17 @@ func (c *cycloneDxVexWriter) Close() error {
 	return nil
 }
 
-// analysisDetail builds the short, always-on justification for a score from
-// the (score, severity, vector) triple only — everything it cites is already
-// in the VEX, so it leaks nothing and is stable across runs. See #316.
+// analysisDetail builds the short justification for a score from the
+// (score, severity, vector) triple only — everything it cites is already
+// in the VEX, so it leaks nothing and is stable across runs. The score is
+// printed with two decimals so the text never rounds differently than the
+// published value (e.g. 56.25 reads 56.25, not 56.2). See #316.
 func analysisDetail(r cyclonedx.VulnerabilityRating) string {
 	score := 0.0
 	if r.Score != nil {
 		score = *r.Score
 	}
-	return fmt.Sprintf("%s risk rating %.1f (%s) from vector %q.", r.Method, score, r.Severity, r.Vector)
+	return fmt.Sprintf("%s risk rating %.2f (%s) from vector %q.", r.Method, score, r.Severity, r.Vector)
 }
 
 func jsonSchemaFor(v cyclonedx.SpecVersion) string {
