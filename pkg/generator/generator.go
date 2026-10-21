@@ -492,6 +492,10 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end 
 			if err != nil {
 				return nil, fmt.Errorf("LLM evaluation failed while asking again for %d vulnerabilities: %w", len(skipped), err)
 			}
+			// Refusal is decided by the ask-again's answers, not the first
+			// ask's: a CVE the retry simply omits is a plain skip, and must
+			// not still report as "refused".
+			clear(refused)
 			collect(entries, skipped, evidenceRef)
 
 			// Still unanswered: a later row of the same CVE can still score
@@ -516,6 +520,19 @@ func (g *Generator) scoreAll(ctx context.Context, batch []LLMVulnerability, end 
 				if len(refusedIDs) == len(uncovered) {
 					return nil, fmt.Errorf("model refused to assess %s after asking again (zero scores, no reasoning); stopping the run",
 						strings.Join(refusedIDs, ", "))
+				}
+				if len(refusedIDs) > 0 {
+					// A mixed batch: name the refused CVEs instead of
+					// falling back to the generic message that drops the
+					// refusal exactly when it matters.
+					var skippedIDs []string
+					for _, id := range uncovered {
+						if !refused[id] {
+							skippedIDs = append(skippedIDs, id)
+						}
+					}
+					return nil, fmt.Errorf("model refused to assess %s (zero scores, no reasoning) and returned no score for %s after asking again; stopping the run",
+						strings.Join(refusedIDs, ", "), strings.Join(skippedIDs, ", "))
 				}
 				return nil, fmt.Errorf("model returned no score for %s after asking again; stopping the run",
 					strings.Join(uncovered, ", "))
