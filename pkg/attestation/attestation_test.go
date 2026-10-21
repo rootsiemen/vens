@@ -331,8 +331,8 @@ func TestBuilder_Write_Claims(t *testing.T) {
 	assert.ElementsMatch(t, []string{d.Claims[0].BomRef, d.Claims[1].BomRef}, at.Map[0].Claims)
 }
 
-// A claim marked reused must say in its predicate that the score was carried
-// over from the CVE's first assessment, while a fresh claim must not.
+// A claim marked reused must say in its predicate that the cited batch's
+// prompt did not contain this package, while a fresh claim must not.
 func TestBuilder_Write_ReusedClaimMarksPredicate(t *testing.T) {
 	b := newTestBuilder(t, nil)
 	ref := b.AddBatch("sys", "hum", []byte(`{"results":[]}`))
@@ -377,9 +377,9 @@ func TestBuilder_Write_ReusedClaimMarksPredicate(t *testing.T) {
 	}
 
 	assert.NotContains(t, byTarget["pkg:deb/debian/openssl@3.0.11"].Predicate, "reused")
-	assert.Contains(t, byTarget["pkg:deb/debian/libssl3@3.0.11"].Predicate, "score reused from the first assessment of this CVE")
+	assert.Contains(t, byTarget["pkg:deb/debian/libssl3@3.0.11"].Predicate, "this package was not in the cited batch's prompt")
 	assert.Equal(t, []string{ref}, byTarget["pkg:deb/debian/libssl3@3.0.11"].Evidence,
-		"a reused claim still cites the first batch's evidence bundle")
+		"a reused claim still cites the batch's evidence bundle")
 }
 
 func TestBuilder_AddClaim_EmptyCompRefSkipped(t *testing.T) {
