@@ -148,8 +148,16 @@ func TestNewUnknownTarget(t *testing.T) {
 	require.Contains(t, err.Error(), `unknown notify target "jira"`)
 }
 
-func TestNewSlackNeedsWebhook(t *testing.T) {
-	_, err := New("slack", SlackOpts{})
+func TestSlackSendNeedsWebhook(t *testing.T) {
+	// Building a notifier without a webhook is fine — formatting (dry-run)
+	// needs none. Only Send requires one.
+	n, err := New("slack", SlackOpts{})
+	require.NoError(t, err)
+
+	r, err := ParseVEX([]byte(testVEX))
+	require.NoError(t, err)
+
+	err = n.Send(context.Background(), r)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "webhook")
 }

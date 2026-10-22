@@ -134,12 +134,13 @@ type SlackOpts struct {
 // New returns the notifier for target ("slack" today). Unknown targets
 // error naming the supported ones, so adding jira/linear is one case here
 // plus a constructor — the interface stays unchanged.
+//
+// The Slack webhook is only required at Send time, not here: building a
+// notifier for formatting alone (e.g. `vens notify --dry-run`) must work
+// without one.
 func New(target string, o SlackOpts) (Notifier, error) {
 	switch target {
 	case "slack":
-		if o.WebhookURL == "" {
-			return nil, fmt.Errorf("slack notifier needs a webhook URL: pass --slack-webhook or set SLACK_WEBHOOK_URL")
-		}
 		return &SlackNotifier{opts: o}, nil
 	default:
 		return nil, fmt.Errorf("unknown notify target %q (supported: slack)", target)
@@ -186,6 +187,9 @@ func pluralize(n int, one, many string) string {
 
 // Send implements Notifier: one stateless message per run.
 func (n *SlackNotifier) Send(ctx context.Context, r *Report) error {
+	if n.opts.WebhookURL == "" {
+		return fmt.Errorf("slack notifier needs a webhook URL: pass --slack-webhook or set SLACK_WEBHOOK_URL")
+	}
 	payload, err := json.Marshal(map[string]string{"text": n.FormatMessage(r)})
 	if err != nil {
 		return fmt.Errorf("failed to build slack payload: %w", err)

@@ -1,7 +1,7 @@
 # Notify reads a VEX and prints the Slack message with --dry-run
 
 exec vens notify --vex vex.cdx.json --to slack --dry-run
-stdout 'vens scan: 2 vulnerabilities scored'
+stdout '\*vens scan:\* 2 vulnerabilities scored'
 stdout 'critical: 1'
 stdout 'low: 1'
 stdout 'CVE-2024-1234'
@@ -9,7 +9,8 @@ stdout '63.0 .critical.'
 
 # An unknown target is rejected with the supported list
 ! exec vens notify --vex vex.cdx.json --to jira --dry-run
-stderr 'unknown notify target "jira"'
+stderr 'unknown notify target'
+stderr 'jira'
 
 # A missing VEX file fails cleanly
 ! exec vens notify --vex does-not-exist.cdx.json --to slack --dry-run
