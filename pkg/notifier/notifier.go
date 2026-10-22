@@ -207,7 +207,7 @@ func (n *SlackNotifier) Send(ctx context.Context, r *Report) error {
 	if err != nil {
 		return fmt.Errorf("failed to post to slack: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("slack webhook returned %s", resp.Status)
 	}
