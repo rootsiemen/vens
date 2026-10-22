@@ -17,6 +17,7 @@ package outputhandler
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -560,5 +561,62 @@ func TestCycloneDxVexWriter_Close_SkipsUnreferencedVuln(t *testing.T) {
 	}
 	if strings.Contains(out, "CVE-2") {
 		t.Error("CVE-2 has no component, it should not be in the VEX")
+	}
+}
+
+func TestCycloneDxVexWriter_Close_DeterministicVulnerabilityOrder(t *testing.T) {
+	score := 42.0
+	rating := cyclonedx.VulnerabilityRating{
+		Method:   cyclonedx.ScoringMethodOWASP,
+		Score:    &score,
+		Severity: cyclonedx.SeverityHigh,
+	}
+	ratings := []VulnRating{
+		{VulnID: "CVE-2024-9999", BOMRef: "pkg:npm/zebra@1.0.0", Rating: rating},
+		{VulnID: "CVE-2024-0001", BOMRef: "pkg:npm/alpha@1.0.0", Rating: rating},
+		{VulnID: "CVE-2024-1234", BOMRef: "pkg:npm/foo@1.0.0", Rating: rating},
+		{VulnID: "CVE-2024-1234", BOMRef: "pkg:npm/bar@2.0.0", Rating: rating},
+		{VulnID: "CVE-2024-1234", BOMRef: "pkg:npm/baz@3.0.0", Rating: rating},
+		{VulnID: "CVE-2024-5678", BOMRef: "pkg:npm/qux@4.0.0", Rating: rating},
+	}
+
+	encode := func(rs []VulnRating) *cyclonedx.BOM {
+		var buf bytes.Buffer
+		h := NewCycloneDxVexOutputHandler(&buf, "test-uuid", 1, "", cyclonedx.SpecVersion1_7)
+		if err := h.HandleVulnRatings(rs); err != nil {
+			t.Fatalf("HandleVulnRatings: %v", err)
+		}
+		if err := h.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		var bom cyclonedx.BOM
+		if err := json.Unmarshal(buf.Bytes(), &bom); err != nil {
+			t.Fatalf("unmarshal BOM: %v", err)
+		}
+		return &bom
+	}
+
+	// Same ratings fed in different orders must produce the same
+	// vulnerabilities[] order: decoded and compared by ID, so the
+	// per-document metadata.timestamp can't flake the assertion.
+	reversed := make([]VulnRating, len(ratings))
+	for i, r := range ratings {
+		reversed[len(ratings)-1-i] = r
+	}
+
+	// The vulnerabilities[] array must be sorted by ID in both runs.
+	want := []string{"CVE-2024-0001", "CVE-2024-1234", "CVE-2024-5678", "CVE-2024-9999"}
+	for _, rs := range [][]VulnRating{ratings, reversed} {
+		bom := encode(rs)
+		if bom.Vulnerabilities == nil {
+			t.Fatal("expected vulnerabilities in the VEX")
+		}
+		got := make([]string, 0, len(*bom.Vulnerabilities))
+		for _, v := range *bom.Vulnerabilities {
+			got = append(got, v.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("vulnerabilities[] order = %v, want sorted %v", got, want)
+		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -162,6 +163,13 @@ func (c *cycloneDxVexWriter) Close() error {
 	for _, v := range vulnMap {
 		vulns = append(vulns, *v)
 	}
+
+	// Go map iteration order is randomized per run; sort by vulnerability ID
+	// so the emitted vulnerabilities[] array is byte-stable for identical
+	// inputs (spurious diffs and unstable content hashes otherwise).
+	slices.SortFunc(vulns, func(a, b cyclonedx.Vulnerability) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 
 	if len(vulns) > 0 {
 		bom.Vulnerabilities = &vulns
