@@ -17,7 +17,6 @@ package outputhandler
 import (
 	"fmt"
 	"io"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -131,12 +130,15 @@ func (c *cycloneDxVexWriter) Close() error {
 
 	vulnMap := make(map[string]*cyclonedx.Vulnerability)
 	affectsSet := make(map[string]map[string]bool)
+	unreferenced := make(map[string]bool)
 	for _, g := range c.r {
 		if g.BOMRef == "" {
-			// Dropping it leaves the run at exit code 0 with a VEX short of a CVE,
-			// which for a gate only fails one way. Kept as a warning for now, see
-			// https://github.com/venslabs/vens/issues/272.
-			slog.Warn("Skipping vulnerability without BOMRef", "vuln", g.VulnID)
+			// A scored vulnerability with no component to point at must fail
+			// the run, not drop out with a warning: a warning still exits 0
+			// with a VEX short of a CVE, which a gate cannot tell from
+			// clean (#272). The same call #269 already made for a missing
+			// score. Nothing is encoded yet, so failing here writes no VEX.
+			unreferenced[g.VulnID] = true
 			continue
 		}
 
@@ -157,6 +159,19 @@ func (c *cycloneDxVexWriter) Close() error {
 			Affects: &[]cyclonedx.Affects{{Ref: bomLink}},
 		}
 		affectsSet[g.VulnID] = map[string]bool{bomLink: true}
+	}
+
+	if len(unreferenced) > 0 {
+		ids := make([]string, 0, len(unreferenced))
+		for id := range unreferenced {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		noun := "vulnerabilities"
+		if len(ids) == 1 {
+			noun = "vulnerability"
+		}
+		return fmt.Errorf("cannot emit VEX: %d scored %s with no component (empty BOMRef) would otherwise be dropped silently: %s", len(ids), noun, strings.Join(ids, ", "))
 	}
 
 	vulns := make([]cyclonedx.Vulnerability, 0, len(vulnMap))
