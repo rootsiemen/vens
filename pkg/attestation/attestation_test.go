@@ -376,7 +376,7 @@ func TestBuilder_Write_ReusedClaimMarksPredicate(t *testing.T) {
 		}{c.Predicate, c.Evidence}
 	}
 
-	assert.NotContains(t, byTarget["pkg:deb/debian/openssl@3.0.11"].Predicate, "reused")
+	assert.NotContains(t, byTarget["pkg:deb/debian/openssl@3.0.11"].Predicate, "this package was not in the cited batch's prompt")
 	assert.Contains(t, byTarget["pkg:deb/debian/libssl3@3.0.11"].Predicate, "this package was not in the cited batch's prompt")
 	assert.Equal(t, []string{ref}, byTarget["pkg:deb/debian/libssl3@3.0.11"].Evidence,
 		"a reused claim still cites the batch's evidence bundle")

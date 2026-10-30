@@ -683,7 +683,7 @@ func TestGenerator_Attestor_ReusedScoreMarksClaim(t *testing.T) {
 		}{c.Predicate, c.Evidence}
 	}
 
-	assert.NotContains(t, byTarget["openssl"].Predicate, "reused",
+	assert.NotContains(t, byTarget["openssl"].Predicate, "this package was not in the cited batch's prompt",
 		"the first package was in the prompt behind the cited evidence")
 	assert.Contains(t, byTarget["libssl3"].Predicate, "this package was not in the cited batch's prompt")
 	assert.Equal(t, byTarget["openssl"].Evidence, byTarget["libssl3"].Evidence,
