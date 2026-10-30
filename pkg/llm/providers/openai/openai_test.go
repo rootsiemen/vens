@@ -47,6 +47,24 @@ func TestGenerate_ReasoningModelRefusesExplicitTemperature(t *testing.T) {
 	}
 }
 
+// Without an explicit temperature, no temperature key is sent — for chat
+// models and reasoning models alike. The flag's zero default is never
+// forwarded on its own, so a plain run keeps working on both.
+func TestGenerate_OmitsTemperatureWhenFlagNotPassed(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-5.4-mini"} {
+		t.Run(model, func(t *testing.T) {
+			url, captured := fakeServer(t, http.StatusOK, successBody)
+			c := newTestClient(t, model, url)
+			if _, err := c.Generate(context.Background(), llm.Request{Schema: json.RawMessage(testSchema)}); err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if _, ok := (*captured)["temperature"]; ok {
+				t.Error("temperature must be omitted when the flag is not passed")
+			}
+		})
+	}
+}
+
 const testSchema = `{"type":"object","properties":{"score":{"type":"number"}},"required":["score"],"additionalProperties":false}`
 
 const successBody = `{"id":"cmpl-1","object":"chat.completion","created":0,"model":"gpt-4o",` +
